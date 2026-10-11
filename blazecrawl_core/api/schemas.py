@@ -29,6 +29,10 @@ class ScrapeRequest(BaseModel):
     render: Literal["auto", "static", "browser"] = "auto"
     use_cache: bool = True
     user_agent: str = Field(default=DEFAULT_USER_AGENT, min_length=1, max_length=200)
+    headers: dict[str, str] | None = Field(
+        default=None,
+        description="Custom HTTP headers to send with the scrape request (e.g., Accept-Language, Authorization).",
+    )
 
     @field_validator("url")
     @classmethod

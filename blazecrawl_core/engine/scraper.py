@@ -112,13 +112,14 @@ def _to_result(
     )
 
 
-async def _fetch_static(url: str, timeout_ms: int, user_agent: str) -> tuple[int, str, str]:
+async def _fetch_static(url: str, timeout_ms: int, user_agent: str, headers: dict[str, str] | None = None) -> tuple[int, str, str]:
     resp = await safe_fetch(
         url,
         timeout_s=timeout_ms / 1000,
         max_redirects=settings.MAX_REDIRECTS,
         max_bytes=settings.MAX_RESPONSE_BYTES,
         user_agent=user_agent,
+        headers=headers,
     )
     return resp.status_code, resp.text, resp.final_url
 
@@ -127,6 +128,7 @@ async def _fetch_browser(
     url: str,
     timeout_ms: int,
     user_agent: str,
+    headers: dict[str, str] | None = None,
     *,
     screenshot: bool = False,
     full_page: bool = False,
@@ -135,7 +137,12 @@ async def _fetch_browser(
     context = await pool.acquire(timeout_ms=timeout_ms)
     try:
         page = await pool.new_page(context, timeout_ms=timeout_ms)
-        await page.set_extra_http_headers({"User-Agent": user_agent})
+        # Merge custom headers with the user_agent. User-Agent is set
+        # separately for compatibility; custom headers take precedence.
+        extra_headers = {"User-Agent": user_agent}
+        if headers:
+            extra_headers.update(headers)
+        await page.set_extra_http_headers(extra_headers)
         await install_browser_ssrf_guard(page)
         response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         # Allow JS to settle briefly for SPA content.
@@ -163,6 +170,7 @@ async def scrape(
     render: str = "auto",
     user_agent: str = "BlazeCrawl/0.1.0",
     full_page: bool = False,
+    headers: dict[str, str] | None = None,
 ) -> ScrapeResult:
     """Scrape a URL to clean Markdown/HTML/text, egress-guarded.
 
@@ -176,6 +184,9 @@ async def scrape(
         render: "auto" (static w/ browser fallback), "static", or "browser".
         user_agent: Outbound User-Agent header used for static and browser fetches.
         full_page: Capture the full scrollable page for "screenshot" (default: viewport).
+        headers: Optional custom HTTP headers to send with the request
+            (e.g., Accept-Language, Authorization). These are merged with
+            the User-Agent header for both static and browser fetches.
     """
     t0 = time.perf_counter()
     timeout_ms = timeout_ms or settings.DEFAULT_TIMEOUT_MS
@@ -194,21 +205,21 @@ async def scrape(
     # straight to the browser even when render is "auto".
     if render == "browser" or want_screenshot:
         status, html, final_url, png = await _fetch_browser(
-            url, timeout_ms, user_agent, screenshot=want_screenshot, full_page=full_page
+            url, timeout_ms, user_agent, headers, screenshot=want_screenshot, full_page=full_page
         )
         ext = await extractor.extract(html, final_url, opts)
         return _to_result(url, status, ext, "browser", t0, final_url, png)
 
     # Static path (with auto fallback to browser).
     try:
-        status, html, final_url = await _fetch_static(url, timeout_ms, user_agent)
+        status, html, final_url = await _fetch_static(url, timeout_ms, user_agent, headers)
     except SSRFValidationError:
         raise
     except Exception as e:
         if render == "static":
             raise
         logger.info("Static fetch failed, falling back to browser", url=url, error=str(e))
-        status, html, final_url, _ = await _fetch_browser(url, timeout_ms, user_agent)
+        status, html, final_url, _ = await _fetch_browser(url, timeout_ms, user_agent, headers)
         ext = await extractor.extract(html, final_url, opts)
         return _to_result(url, status, ext, "browser", t0, final_url)
 
@@ -220,7 +231,7 @@ async def scrape(
         if words < _MIN_STATIC_WORDS and status == 200:
             logger.info("Static content thin; retrying with browser", url=url, words=words)
             try:
-                bstatus, bhtml, bfinal, _ = await _fetch_browser(url, timeout_ms, user_agent)
+                bstatus, bhtml, bfinal, _ = await _fetch_browser(url, timeout_ms, user_agent, headers)
                 bext = await extractor.extract(bhtml, bfinal, opts)
                 if len((bext.markdown or "").split()) > words:
                     return _to_result(url, bstatus, bext, "browser", t0, bfinal)

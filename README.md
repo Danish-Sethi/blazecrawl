@@ -268,7 +268,9 @@ Prefer Node.js? See the [equivalent `npx` configuration](mcp/node/README.md).
 All `/v1/` endpoints require your bearer key by default. Scrape `render` accepts `static`, `browser`,
 or `auto` (static first, browser fallback for thin content). See [table conversion limits](docs/MARKDOWN_TABLES.md)
 when working with tabular pages. The current source checkout also supports `user_agent` per scrape
-or crawl; it selects robots.txt rules for crawls. That field is **not in the published `v0.1.2` schema**.
+or crawl; it selects robots.txt rules for crawls. The source checkout also supports a `headers`
+field on scrape for custom outbound HTTP headers (User-Agent, Accept-Language, Authorization, etc.).
+Both fields are **not in the published `v0.1.2` schema**.
 Your running instance's `/docs` is the authoritative version-specific contract.
 
 **Screenshots (source checkout, not in the published `v0.1.2` schema):** `"formats": ["screenshot"]` returns
