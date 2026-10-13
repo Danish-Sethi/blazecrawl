@@ -30,13 +30,16 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from blazecrawl_core.config import settings
 from blazecrawl_core.logging import get_logger
+from blazecrawl_core.network.browser_proxy import BrowserEgressProxy
 from blazecrawl_core.network.headers import http_origin, validate_headers, validate_user_agent
 from blazecrawl_core.network.ssrf import (
     PinnedTarget,
     SSRFValidationError,
     validate_and_pin,
 )
+from blazecrawl_core.network.upstream_proxy import UpstreamProxy, authority
 
 logger = get_logger(__name__)
 
@@ -97,12 +100,18 @@ class PinnedAsyncClient:
         verify: bool = True,
         user_agent: str | None = None,
         max_bytes: int | None = None,
+        upstream_proxy_url: str | None = None,
     ) -> None:
         self._timeout = httpx.Timeout(timeout_s)
         self._max_redirects = max_redirects
         self._verify = verify
         self._user_agent = user_agent
         self._max_bytes = max_bytes
+        self._upstream_proxy_url = upstream_proxy_url
+        if upstream_proxy_url is not None:
+            UpstreamProxy.parse(upstream_proxy_url)
+            if not verify:
+                raise SSRFValidationError("Upstream proxy requires TLS certificate verification")
 
     async def request(
         self,
@@ -118,6 +127,33 @@ class PinnedAsyncClient:
             SSRFValidationError: if the initial URL or any redirect target fails
                 validation/pinning (fail closed).
         """
+        if self._upstream_proxy_url is None:
+            return await self._request(method, url, headers=headers, content=content)
+        proxy = BrowserEgressProxy(
+            upstream_proxy_url=self._upstream_proxy_url,
+            connect_timeout=self._timeout.connect,
+            read_timeout=self._timeout.read,
+        )
+        try:
+            local_proxy_url = await proxy.start()
+            response = await self._request(
+                method, url, headers=headers, content=content, local_proxy_url=local_proxy_url
+            )
+            if any(event["event"] == "failed" for event in proxy.connection_events):
+                raise SSRFValidationError("Upstream proxy connection refused or failed validation")
+            return response
+        finally:
+            await proxy.close()
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None,
+        content: bytes | None,
+        local_proxy_url: str | None = None,
+    ) -> EgressResponse:
         redirects: list[str] = []
         current_url = url
         base_headers = validate_headers(headers)
@@ -129,15 +165,24 @@ class PinnedAsyncClient:
             # here, and the connection below is bound to the returned IP.
             target = await validate_and_pin(current_url)
 
-            connect_url = _pin_url_to_ip(target)
+            # Only our controlled loopback proxy receives the hostname. It
+            # validates again at the socket boundary and sends a numeric CONNECT
+            # upstream; httpx retains the origin hostname for TLS verification.
+            connect_url = current_url if local_proxy_url is not None else _pin_url_to_ip(target)
             req_headers = dict(base_headers)
             if self._user_agent:
                 req_headers.setdefault("user-agent", self._user_agent)
             req_headers["Host"] = (
-                target.hostname if target.port in (80, 443) else f"{target.hostname}:{target.port}"
+                f"[{target.hostname}]" if ":" in target.hostname else target.hostname
             )
+            if target.port != (443 if target.scheme == "https" else 80):
+                req_headers["Host"] = authority(target.hostname, target.port)
 
-            transport = _pinned_transport(target, verify=self._verify)
+            transport = (
+                httpx.AsyncHTTPTransport(proxy=local_proxy_url, verify=True, retries=0)
+                if local_proxy_url is not None
+                else _pinned_transport(target, verify=self._verify)
+            )
             # extensions carry the SNI hostname so TLS verifies against the real
             # host even though we dialed the pinned IP.
             extensions: dict[str, Any] = {"sni_hostname": target.hostname}
@@ -158,26 +203,25 @@ class PinnedAsyncClient:
                     # Stream so we can enforce a hard size cap without buffering
                     # an unbounded body into memory.
                     response = await client.send(request, stream=True)
-                    clen = response.headers.get("content-length")
-                    if clen is not None:
+                    try:
                         try:
-                            if int(clen) > self._max_bytes:
-                                await response.aclose()
-                                raise SSRFValidationError(
-                                    f"Response exceeds max_bytes ({self._max_bytes})"
-                                )
+                            declared_length = int(response.headers.get("content-length", ""))
                         except ValueError:
-                            pass
-                    chunks = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        chunks.extend(chunk)
-                        if len(chunks) > self._max_bytes:
-                            await response.aclose()
+                            declared_length = None
+                        if declared_length is not None and declared_length > self._max_bytes:
                             raise SSRFValidationError(
                                 f"Response exceeds max_bytes ({self._max_bytes})"
                             )
-                    body = bytes(chunks)
-                    await response.aclose()
+                        chunks = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            chunks.extend(chunk)
+                            if len(chunks) > self._max_bytes:
+                                raise SSRFValidationError(
+                                    f"Response exceeds max_bytes ({self._max_bytes})"
+                                )
+                        body = bytes(chunks)
+                    finally:
+                        await response.aclose()
                 else:
                     response = await client.send(request)
                     body = await response.aread()
@@ -227,6 +271,7 @@ async def safe_fetch(
         max_redirects=max_redirects,
         user_agent=user_agent,
         max_bytes=max_bytes,
+        upstream_proxy_url=settings.EGRESS_UPSTREAM_PROXY,
     )
     return await client.request(method, url, headers=headers)
 
@@ -372,81 +417,17 @@ def install_context_popup_ssrf_guard(context) -> None:
         on("page", _on_new_page)
 
 
-# ---------------------------------------------------------------------------
-# M9 — SSRF-safe egress THROUGH a proxy
-# ---------------------------------------------------------------------------
-# Routing a fetch through a proxy changes the network mechanics but MUST NOT
-# weaken the M2 SSRF guarantees. The guarantees are preserved as follows:
-#
-#   1. TARGET VALIDATION IS UNCONDITIONAL. Before every hop we call
-#      validate_and_pin(target) exactly as the direct path does. A proxied
-#      request to an internal/blocked target (or a proxied redirect to one) is
-#      refused with SSRFValidationError — the proxy can never be used as an SSRF
-#      pivot to RFC-1918 / loopback / link-local / cloud-metadata ranges.
-#
-#   2. THE PROXY ENDPOINT ITSELF IS VALIDATED. We resolve+classify the proxy
-#      host and refuse a proxy that points at an internal range, so a
-#      misconfigured/hostile proxy URL cannot tunnel us inside the perimeter.
-#
-#   3. NETWORK-ISOLATION ASSUMPTION (documented + enforced-in-depth). With an
-#      HTTP/HTTPS proxy the proxy performs the final DNS + connect to the target
-#      host, so we cannot pin the *socket* to our validated IP the way the
-#      direct path does. The residual gap (proxy re-resolves the host) is closed
-#      by (a) always validating the host's resolution ourselves immediately
-#      before the call — an attacker controlling DNS still has to present a
-#      public IP to OUR resolver — and (b) the operational requirement that
-#      egress proxies run OUTSIDE the trusted network with no route to internal
-#      services. Both are required; neither alone is sufficient. We fail closed
-#      if target validation fails for any reason.
-
-_PROXYABLE_SCHEMES = ("http", "https", "socks5", "socks5h")
-
-
 async def validate_proxy_endpoint(proxy_url: str) -> None:
-    """Validate that a proxy endpoint is well-formed and NOT internal.
-
-    Raises SSRFValidationError if the proxy host resolves to a blocked range, so
-    a hostile/misconfigured proxy URL cannot become a tunnel into the perimeter.
-    Credentials in the URL are ignored for validation and never logged.
-    """
-    parts = urlsplit(proxy_url)
-    scheme = (parts.scheme or "").lower()
-    if scheme not in _PROXYABLE_SCHEMES:
-        raise SSRFValidationError(f"Unsupported proxy scheme: {scheme!r}")
-    host = parts.hostname
-    if not host:
-        raise SSRFValidationError("Proxy URL has no host")
-
-    # Reuse the SSRF resolver/denylist on the proxy host. We build an http URL
-    # purely to run it through the same validation path; we do not fetch it.
-    port = parts.port or (443 if scheme in ("https",) else 80)
-    from blazecrawl_core.network.ip_utils import is_blocked_address as _is_blocked_address
-    from blazecrawl_core.network.ssrf import _classify_resolved_ip, _parse_ip_literal, _resolve
-
-    literal = _parse_ip_literal(host)
-    if literal is not None:
-        if _is_blocked_address(literal):
-            raise SSRFValidationError("Proxy endpoint resolves to a blocked address")
-        return
-    ips = await _resolve(host, port)
-    if not ips:
-        raise SSRFValidationError("Proxy hostname resolution returned no addresses")
-    for ip in ips:
-        _classify_resolved_ip(ip)
+    """Validate a credential-free endpoint; actual dials always validate again."""
+    proxy = UpstreamProxy.parse(proxy_url)
+    try:
+        await validate_and_pin(f"{proxy.scheme}://{authority(proxy.hostname, proxy.port)}/")
+    except SSRFValidationError:
+        raise SSRFValidationError("Upstream proxy endpoint failed validation") from None
 
 
-class PinnedProxyClient:
-    """SSRF-safe async HTTP client that routes through a proxy.
-
-    Behaves like :class:`PinnedAsyncClient` for VALIDATION purposes — every hop
-    (and redirect) is validated via ``validate_and_pin`` and https→http
-    downgrades are blocked — but the actual connection is made THROUGH the proxy
-    (httpx ``proxy=``) rather than to a pinned socket. The proxy endpoint is
-    validated once up front.
-
-    Use this only for the proxied path; the direct path stays on
-    :class:`PinnedAsyncClient` (which additionally pins the socket IP).
-    """
+class PinnedProxyClient(PinnedAsyncClient):
+    """Pinned egress through HTTP(S) CONNECT, sharing the direct redirect loop."""
 
     def __init__(
         self,
@@ -458,98 +439,11 @@ class PinnedProxyClient:
         user_agent: str | None = None,
         max_bytes: int | None = None,
     ) -> None:
-        self._proxy_url = proxy_url
-        self._timeout = httpx.Timeout(timeout_s)
-        self._max_redirects = max_redirects
-        self._verify = verify
-        self._user_agent = user_agent
-        self._max_bytes = max_bytes
-        self._proxy_validated = False
-
-    async def request(
-        self,
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str] | None = None,
-        content: bytes | None = None,
-    ) -> EgressResponse:
-        base_headers = validate_headers(headers)
-        if self._user_agent is not None:
-            validate_user_agent(self._user_agent)
-        if not self._proxy_validated:
-            await validate_proxy_endpoint(self._proxy_url)
-            self._proxy_validated = True
-
-        redirects: list[str] = []
-        current_url = url
-
-        for _hop in range(self._max_redirects + 1):
-            # UNCONDITIONAL target validation — identical to the direct path.
-            # This is what stops the proxy from being an SSRF pivot.
-            await validate_and_pin(current_url)
-            req_headers = dict(base_headers)
-            if self._user_agent:
-                req_headers.setdefault("user-agent", self._user_agent)
-
-            async with httpx.AsyncClient(
-                proxy=self._proxy_url,
-                timeout=self._timeout,
-                verify=self._verify,
-                follow_redirects=False,  # manual: re-validate every hop
-            ) as client:
-                request = client.build_request(
-                    method, current_url, headers=req_headers, content=content
-                )
-                if self._max_bytes is not None:
-                    response = await client.send(request, stream=True)
-                    clen = response.headers.get("content-length")
-                    if clen is not None:
-                        try:
-                            if int(clen) > self._max_bytes:
-                                await response.aclose()
-                                raise SSRFValidationError(
-                                    f"Response exceeds max_bytes ({self._max_bytes})"
-                                )
-                        except ValueError:
-                            pass
-                    chunks = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        chunks.extend(chunk)
-                        if len(chunks) > self._max_bytes:
-                            await response.aclose()
-                            raise SSRFValidationError(
-                                f"Response exceeds max_bytes ({self._max_bytes})"
-                            )
-                    body = bytes(chunks)
-                    await response.aclose()
-                else:
-                    response = await client.send(request)
-                    body = await response.aread()
-
-            if response.status_code in _REDIRECT_STATUSES and "location" in response.headers:
-                location = response.headers["location"]
-                next_url = urljoin(current_url, location)
-                cur_scheme = urlsplit(current_url).scheme.lower()
-                next_scheme = urlsplit(next_url).scheme.lower()
-                if cur_scheme == "https" and next_scheme == "http":
-                    raise SSRFValidationError("Blocked redirect: https→http downgrade")
-                if http_origin(current_url) != http_origin(next_url):
-                    base_headers = {}
-                redirects.append(next_url)
-                current_url = next_url
-                continue
-
-            return EgressResponse(
-                url=url,
-                final_url=current_url,
-                status_code=response.status_code,
-                headers={k.lower(): v for k, v in response.headers.items()},
-                content=body,
-                redirects=redirects,
-            )
-
-        raise SSRFValidationError(f"Too many redirects (>{self._max_redirects})")
-
-    async def get(self, url: str, **kwargs: Any) -> EgressResponse:
-        return await self.request("GET", url, **kwargs)
+        super().__init__(
+            upstream_proxy_url=proxy_url,
+            timeout_s=timeout_s,
+            max_redirects=max_redirects,
+            verify=verify,
+            user_agent=user_agent,
+            max_bytes=max_bytes,
+        )

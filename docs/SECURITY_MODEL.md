@@ -39,6 +39,37 @@ Chromium
 > passed prohibited-address validation for the corresponding hostname at
 > connection time.
 
+### Optional upstream proxy
+
+`EGRESS_UPSTREAM_PROXY` routes static HTTP (including robots.txt, map, and crawl
+fetches) and browser egress through an HTTP or HTTPS CONNECT proxy. Unset it to
+keep direct egress. The controlled loopback proxy and browser request guards
+remain enabled; Chromium never receives the upstream endpoint or its credentials.
+
+Both the complete target DNS answer set and the upstream endpoint are validated
+at each connection boundary. The endpoint is freshly resolved on **every dial**,
+then reached through a numeric socket (HTTPS endpoints retain hostname-based
+SNI and certificate verification). Upstream CONNECT uses only the locally
+validated target **IP literal**, including bracketed IPv6, never its hostname.
+HTTP retains the original Host; HTTPS retains origin SNI and normal certificate
+verification through the opaque tunnel. There is no remote target DNS or MITM.
+The direct and proxied static paths share redirect validation, header scoping,
+response-size caps, and HTTPS-to-HTTP downgrade rejection.
+
+Only HTTP/HTTPS CONNECT is supported, for both HTTP and HTTPS destinations.
+SOCKS, endpoint paths other than `/`, query strings, fragments, invalid ports,
+and malformed credentials fail closed with credential-redacted errors.
+Optional percent-encoded `username:password` credentials use Basic authentication
+**only** in the upstream CONNECT negotiation, never in origin requests.
+CONNECT response headers are bounded to 64 KiB; DNS/connect/TLS/negotiation and
+tunnel reads have explicit deadlines, and cancellation closes sockets.
+
+An upstream proxy is still a trusted network operator: it can observe or modify
+plain HTTP and can refuse or misroute tunnels. BlazeCrawl sends validated numeric
+targets; it cannot attest to how a remote proxy implements CONNECT. Use HTTPS for
+destination authentication, and an HTTPS proxy endpoint to protect proxy Basic
+credentials in transit.
+
 ### Browser primitives — v0.1 policy
 
 | Primitive               | v0.1 Policy                                  |
