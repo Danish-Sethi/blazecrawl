@@ -14,11 +14,22 @@ versioning follows SemVer.
   screenshots. The setting must be a positive integer.
 - `blazecrawl scrape --formats screenshot --output page.png` (with `--full-page` for the whole page) in the
   source-checkout CLI.
+- Crawl jobs checkpoint their frontier, visited URLs, results, and counters after every page. With
+  `REDIS_URL` set and reachable at startup, checkpoints go to Redis, one transaction each; otherwise they stay
+  in memory. Unfinished crawls resume after a restart, so `GET /v1/crawl/{job_id}` keeps working and completed
+  pages are not fetched again. Redis unreachable at startup logs a warning and falls back. (#9, #31)
+- Opt-in disk checkpoints (`CRAWL_CHECKPOINTS_ENABLED=true`) under the state directory, written atomically.
+  Used when Redis is not configured or is unreachable.
 - Opt-in Prometheus `/metrics` endpoint via the `[metrics]` extra and
   `METRICS_ENABLED=true`, exposing actual browser-pool size, active contexts,
   lifecycle errors, and page-creation latency without URL/credential labels.
   Disabled by default with no mandatory dependency; enabling without the extra
   fails with actionable installation instructions.
+
+### Changed
+- A normal shutdown suspends running crawls without marking them cancelled; they resume on the next startup.
+  Only an explicit cancel is terminal.
+- `GET /v1/crawl/{job_id}` also returns `max_depth`, `created_at`, and `finished_at`.
 
 ### Fixed
 - Browser-pool context/semaphore accounting on failed startup, restart,

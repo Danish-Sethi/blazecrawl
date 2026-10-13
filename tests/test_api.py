@@ -2,6 +2,7 @@
 
 import base64
 import os
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -89,7 +90,30 @@ def test_map_example_com(client):
     assert isinstance(r.json()["urls"], list)
 
 
-def test_crawl_lifecycle(client):
+def test_crawl_lifecycle(client, monkeypatch):
+    # Deterministic: the crawl runs against a fixed page result instead of live DNS, robots.txt or
+    # example.com. Real egress behaviour stays covered by the SSRF tests in this file and tests/security.
+    from blazecrawl_core.engine import crawler, robots
+    from blazecrawl_core.engine.scraper import ScrapeResult
+    from blazecrawl_core.network import ssrf
+
+    page = ScrapeResult(
+        url="https://example.com",
+        final_url="https://example.com/",
+        status_code=200,
+        markdown="# Example Domain",
+        html=None,
+        plaintext=None,
+        links=[],
+        images=None,
+        metadata={"title": "Example Domain"},
+        render="static",
+        duration_ms=1.0,
+    )
+    monkeypatch.setattr(crawler, "scrape", AsyncMock(return_value=page))
+    monkeypatch.setattr(robots, "is_allowed", AsyncMock(return_value=True))
+    monkeypatch.setattr(ssrf, "validate_and_pin", AsyncMock(return_value=None))
+
     r = client.post(
         "/v1/crawl", json={"url": "https://example.com", "max_pages": 1, "max_depth": 0}
     )
@@ -104,6 +128,7 @@ def test_crawl_lifecycle(client):
             break
         time.sleep(0.3)
     assert g.json()["status"] == "completed"
+    assert g.json()["pages"][0]["markdown"] == "# Example Domain"
 
 
 def test_crawl_blocks_ssrf(client):

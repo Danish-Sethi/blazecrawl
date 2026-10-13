@@ -19,7 +19,8 @@ Node surfaces (SDK + MCP) need Node 18+ and have **no** runtime dependencies.
 blazecrawl_core/
 ├── network/      # ssrf.py (validate+pin), egress.py (pinned client + browser guard), ip_utils.py
 ├── engine/       # scraper.py, content_extractor.py, markdown_converter.py,
-│                 # browser_pool.py, crawler.py, mapper.py, robots.py, cache.py, url_normalizer.py
+│                 # browser_pool.py, crawler.py, job_store.py, mapper.py, robots.py,
+│                 # cache.py, url_normalizer.py
 ├── api/          # main.py (FastAPI), auth.py (local key), schemas.py
 └── cli.py
 sdks/python, sdks/node, mcp/python, mcp/node
