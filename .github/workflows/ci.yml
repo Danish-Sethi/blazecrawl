@@ -15,7 +15,7 @@ env:
 jobs:
   python:
     name: Python (lint, type, tests, build)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -36,7 +36,7 @@ jobs:
 
   python-sdk:
     name: Python SDK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -48,10 +48,10 @@ jobs:
 
   node:
     name: Node SDK + MCP (lint/typecheck/test)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 20
       - name: Node SDK syntax + tests
@@ -63,7 +63,7 @@ jobs:
 
   python-mcp:
     name: Python MCP
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -75,7 +75,7 @@ jobs:
 
   docker-smoke:
     name: Docker quickstart smoke (OSS-J1/J2/J5)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       BLAZECRAWL_API_KEY: ci-local-test-key-not-a-secret
     steps:
@@ -105,7 +105,7 @@ jobs:
 
   security:
     name: Security (secrets, deps, licenses)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
