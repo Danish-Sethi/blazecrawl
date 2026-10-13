@@ -75,6 +75,7 @@ class Network:
         self.tasks = set()
         self.servers = []
         self.stall = False
+        self.tunnel_ports = {}
 
     async def resolve(self, host, port):
         self.resolutions.append((host, port))
@@ -178,7 +179,9 @@ async def network(monkeypatch, certificate):
             await writer.drain()
             if net.proxy_response != b"HTTP/1.1 200 Connection Established\r\n\r\n":
                 return
-            remote_reader, remote = await asyncio.open_connection("127.0.0.1", port)
+            remote_reader, remote = await asyncio.open_connection(
+                "127.0.0.1", net.tunnel_ports.get(port, port)
+            )
 
             async def copy(source, destination):
                 while data := await source.read(65536):
@@ -575,6 +578,26 @@ async def test_static_post_body_is_forwarded_without_proxy_header_terminator_byt
         "POST", f"{scheme}://origin.test:{port}/", content=b"payload"
     )
     assert response.status_code == 200 and net.bodies == [b"payload"]
+
+
+@pytest.mark.parametrize(
+    ("scheme", "port", "expected_host"),
+    [
+        ("http", 80, "origin.test"),
+        ("http", 443, "origin.test:443"),
+        ("https", 443, "origin.test"),
+        ("https", 80, "origin.test:80"),
+    ],
+)
+async def test_origin_host_port_is_scheme_aware_through_connect(
+    network, scheme, port, expected_host
+):
+    net = network
+    net.tunnel_ports[port] = net.https_port if scheme == "https" else net.http_port
+    response = await PinnedProxyClient(net.proxy_url).get(f"{scheme}://origin.test:{port}/")
+    assert response.status_code == 200
+    assert f"Host: {expected_host}\r\n".encode() in net.origins[0]
+    assert net.connects[0].startswith(f"CONNECT {ORIGIN_IP}:{port} ".encode())
 
 
 async def test_browser_pool_keeps_local_proxy_with_configured_upstream(network, monkeypatch):
