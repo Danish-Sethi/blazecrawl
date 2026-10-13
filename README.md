@@ -212,9 +212,11 @@ blazecrawl health
 
 Add `--json` for the full response. See [runnable examples](examples/README.md) for more.
 
-**Source-checkout extras:** `scrape --output page.md` and `doctor` are available in the current
-repository, **not the published `v0.1.2` CLI**. Follow [source setup](CONTRIBUTING.md#setup) to use them.
+**Source-checkout extras:** `scrape --output page.md`, `scrape --formats screenshot --output page.png`
+(add `--full-page` for the whole page), and `doctor` are available in the current repository, **not the
+published `v0.1.2` CLI**. Follow [source setup](CONTRIBUTING.md#setup) to use them.
 `--output` writes UTF-8 and overwrites an existing file; its parent directory must exist.
+With `--formats screenshot`, `--output` writes the PNG bytes, and `--json` returns the full response with the base64 screenshot.
 `doctor` checks Chromium and, when configured, server/key access.
 
 ### MCP

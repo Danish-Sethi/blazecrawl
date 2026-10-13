@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import pytest
 from playwright.async_api import async_playwright
 
+from blazecrawl_core.config import Settings
 from blazecrawl_core.engine import scraper
 from blazecrawl_core.engine.browser_pool import take_screenshot
 from blazecrawl_core.engine.content_extractor import ExtractOptions, get_content_extractor
@@ -53,7 +54,9 @@ async def test_robots_allows_public_by_default_when_unreachable():
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-TALL_HTML = "<html><body style='margin:0'><div style='height:3000px;background:#39f'></div></body></html>"
+TALL_HTML = (
+    "<html><body style='margin:0'><div style='height:3000px;background:#39f'></div></body></html>"
+)
 
 
 def _png_height(png: bytes) -> int:
@@ -107,3 +110,22 @@ async def test_scrape_screenshot_goes_to_browser_and_forwards_full_page(monkeypa
     assert calls == [(True, True)]
     assert result.render == "browser"
     assert base64.b64decode(result.screenshot).startswith(PNG_SIGNATURE)
+
+
+async def test_auto_fallback_does_not_swallow_screenshot_cap(monkeypatch):
+    async def thin_static(*args, **kwargs):
+        return 200, "<html><body><p>tiny</p></body></html>", "https://example.com/"
+
+    async def oversize_browser(*args, **kwargs):
+        raise ScreenshotTooLargeError("too big", details={"size_bytes": 2, "max_bytes": 1})
+
+    monkeypatch.setattr(scraper, "_fetch_static", thin_static)
+    monkeypatch.setattr(scraper, "_fetch_browser", oversize_browser)
+    with pytest.raises(ScreenshotTooLargeError):
+        await scraper.scrape("https://example.com", formats=["markdown"], render="auto")
+
+
+def test_screenshot_cap_must_be_positive(monkeypatch):
+    monkeypatch.setenv("SCREENSHOT_MAX_BYTES", "0")
+    with pytest.raises(ValueError, match="SCREENSHOT_MAX_BYTES"):
+        Settings()

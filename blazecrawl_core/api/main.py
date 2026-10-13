@@ -7,6 +7,7 @@ SSRF/egress security model is enforced on every outbound fetch.
 
 from __future__ import annotations
 
+import base64
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -22,7 +23,7 @@ from blazecrawl_core.api.schemas import (
 )
 from blazecrawl_core.config import settings
 from blazecrawl_core.engine import cache
-from blazecrawl_core.engine.browser_pool import get_browser_pool
+from blazecrawl_core.engine.browser_pool import enforce_screenshot_cap, get_browser_pool
 from blazecrawl_core.engine.crawler import get_crawl_manager
 from blazecrawl_core.engine.mapper import map_site
 from blazecrawl_core.engine.scraper import scrape
@@ -95,6 +96,11 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
                 payload.full_page,
             )
             if hit is not None:
+                if hit.get("screenshot"):
+                    # Re-check against the current cap in case SCREENSHOT_MAX_BYTES was lowered since caching.
+                    enforce_screenshot_cap(
+                        base64.b64decode(hit["screenshot"]), settings.SCREENSHOT_MAX_BYTES
+                    )
                 return ScrapeResponse(success=True, data={**hit, "cached": True})
 
         result = await scrape(

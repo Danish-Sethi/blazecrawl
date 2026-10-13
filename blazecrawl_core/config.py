@@ -66,6 +66,8 @@ class Settings:
 
         # Screenshot capture (formats=["screenshot"]): hard cap on raw PNG bytes.
         self.SCREENSHOT_MAX_BYTES: int = _env_int("SCREENSHOT_MAX_BYTES", 5 * 1024 * 1024)
+        if self.SCREENSHOT_MAX_BYTES <= 0:
+            raise ValueError("SCREENSHOT_MAX_BYTES must be a positive integer")
 
         # Caching (Redis optional; falls back to in-process when unset).
         self.REDIS_URL: str | None = os.environ.get("REDIS_URL") or None

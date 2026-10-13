@@ -23,6 +23,7 @@ from blazecrawl_core.engine.content_extractor import (
     ExtractOptions,
     get_content_extractor,
 )
+from blazecrawl_core.exceptions import ScreenshotTooLargeError
 from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.egress import install_browser_ssrf_guard, safe_fetch
 from blazecrawl_core.network.ssrf import SSRFValidationError
@@ -223,6 +224,8 @@ async def scrape(
                 bext = await extractor.extract(bhtml, bfinal, opts)
                 if len((bext.markdown or "").split()) > words:
                     return _to_result(url, bstatus, bext, "browser", t0, bfinal)
+            except ScreenshotTooLargeError:
+                raise
             except Exception as e:
                 logger.warning("Browser fallback failed; using static result", error=str(e))
 

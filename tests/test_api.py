@@ -141,6 +141,17 @@ def test_scrape_screenshot_over_cap_returns_413_without_data(client, monkeypatch
     assert body["detail"]["max_bytes"] == 1024
 
 
+def test_cached_screenshot_over_lowered_cap_returns_413(client, monkeypatch):
+    body = {"url": "https://example.com", "formats": ["screenshot"]}
+    first = client.post("/v1/scrape", json=body)
+    assert first.status_code == 200
+    monkeypatch.setattr(settings, "SCREENSHOT_MAX_BYTES", 1024)
+    r = client.post("/v1/scrape", json=body)
+    assert r.status_code == 413
+    assert "data" not in r.json()
+    assert r.json()["detail"]["error"] == "screenshot_too_large"
+
+
 def test_scrape_screenshot_rejects_static_render(client):
     r = client.post(
         "/v1/scrape",

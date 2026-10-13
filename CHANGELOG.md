@@ -10,7 +10,10 @@ versioning follows SemVer.
   Screenshots always render in the browser, so `render: "static"` is rejected with HTTP 422.
 - `full_page` boolean on `POST /v1/scrape` (default `false`) captures the full scrollable page for screenshots.
 - `SCREENSHOT_MAX_BYTES` setting (default 5 MB of raw PNG bytes). Captures over the cap are rejected with
-  HTTP 413 (`error: "screenshot_too_large"`) and never return partial data.
+  HTTP 413 (`error: "screenshot_too_large"`) and never return partial data. The cap also applies to cached
+  screenshots. The setting must be a positive integer.
+- `blazecrawl scrape --formats screenshot --output page.png` (with `--full-page` for the whole page) in the
+  source-checkout CLI.
 
 ## [0.1.2] — Distribution integrity repair
 
