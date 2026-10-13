@@ -17,7 +17,10 @@ Checks require live public DNS/TLS/HTTP, not mocked API responses:
 runtime/CLI/health versions, auth rejection, private-URL rejection, authenticated
 static Markdown from example.com, actual Chromium rendering + PNG signature/cap,
 two-page depth-one quotes.toscrape.com crawl with polling, stop/restart with the same
-checkpoint storage, retained first page and completed bounded result. Installed
+checkpoint storage, retained first page and completed bounded result. The container
+leg uses fresh-volume generated-key bootstrap (0600), privately recovers the key,
+authenticates and proves persisted-key reuse after restart. Bootstrap logs are redacted;
+the native leg uses an explicit random key, including on Windows. Installed
 Python/Node SDKs exercise version/health, Markdown unwrapping, auth errors and crawl
 polling; both MCP distributions perform real initialize/list_tools/call_tool over
 stdio through the local API. No SSRF override or skip-as-success is used.

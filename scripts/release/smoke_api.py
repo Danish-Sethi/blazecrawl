@@ -6,6 +6,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import secrets
 import signal
 import socket
@@ -80,6 +81,7 @@ def smoke(args) -> None:
             port = sock.getsockname()[1]
         base = f"http://127.0.0.1:{port}"
         key = secrets.token_urlsafe(32)
+        initial_key = None
         env = {
             **os.environ,
             "BLAZECRAWL_API_URL": base,
@@ -104,7 +106,15 @@ def smoke(args) -> None:
         log = (root / "server.log").open("w", encoding="utf-8")
         if args.image:
             run(["docker", "volume", "create", volume])
-            cli = ["docker", "exec", name, "blazecrawl"]
+            cli = [
+                "docker",
+                "exec",
+                name,
+                "sh",
+                "-c",
+                'export BLAZECRAWL_API_KEY="$(cat /data/blazecrawl/api_key)"; exec blazecrawl "$@"',
+                "blazecrawl",
+            ]
         else:
             python = str(Path(args.core_python).resolve())
             bin_dir = Path(python).parent
@@ -116,7 +126,7 @@ def smoke(args) -> None:
             assert reported == args.version, reported
 
         def start():
-            nonlocal process, container_started
+            nonlocal process, container_started, key, initial_key
             if args.image:
                 command = [
                     "docker",
@@ -130,8 +140,6 @@ def smoke(args) -> None:
                     f"127.0.0.1:{port}:8000",
                     "-v",
                     f"{volume}:/data/blazecrawl",
-                    "-e",
-                    "BLAZECRAWL_API_KEY",
                     "-e",
                     "CRAWL_CHECKPOINTS_ENABLED",
                     "-e",
@@ -154,16 +162,28 @@ def smoke(args) -> None:
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
                 )
             wait_ready(base, args.version)
+            if args.image:
+                persisted = run(["docker", "exec", name, "cat", "/data/blazecrawl/api_key"])
+                assert persisted.startswith("blz_local_") and len(persisted) >= 32
+                assert (
+                    run(["docker", "exec", name, "stat", "-c", "%a", "/data/blazecrawl/api_key"])
+                    == "600"
+                )
+                if initial_key is None:
+                    initial_key = persisted
+                    key = persisted
+                    env["BLAZECRAWL_API_KEY"] = key
+                else:
+                    assert persisted == initial_key, "Container restart changed the persisted key"
 
         def stop():
             nonlocal process, container_started
             if container_started:
                 run(["docker", "stop", "--time", "30", name])
-                # Logs cannot contain the explicit key; it is never bootstrapped/printed.
+                # Bootstrap logs contain a credential; redact before any diagnostics.
+                text = run(["docker", "logs", name], stderr=subprocess.STDOUT)
                 with (root / "server.log").open("a", encoding="utf-8") as output:
-                    subprocess.run(
-                        ["docker", "logs", name], stdout=output, stderr=output, check=True
-                    )
+                    output.write(re.sub(r"blz_local_[A-Za-z0-9_-]+", "[REDACTED]", text))
                 run(["docker", "rm", name])
                 container_started = False
             if process is not None:
@@ -235,6 +255,8 @@ def smoke(args) -> None:
             assert before["status"] == "running" and before["pages_crawled"] == 1, before
             stop()
             start()
+            if args.image:
+                print("PASS generated container key (0600) and persisted-key reuse", flush=True)
             after = poll(base, key, path, lambda job: job["status"] == "completed")
             assert after["job_id"] == created["job_id"]
             assert after["created_at"] == before["created_at"]

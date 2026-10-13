@@ -20,8 +20,10 @@ for https://example.com. Tell us what is unclear. You may stop whenever you want
 Do not demonstrate the commands or explain what to click/type in advance.
 
 **Start:** participant first opens Quickstart after prerequisites are confirmed.
-**End:** `data.markdown` containing "Example Domain" is visible from an authenticated
-static scrape, or 10 minutes elapse, or the participant stops. Setup/auth errors count
+**End:** non-empty `data.markdown` from https://example.com is visible from an authenticated
+static scrape, or 10 minutes elapse, or the participant stops. The recommended request
+uses `only_main_content: false` to retain the heading; extraction of main content alone
+may omit that heading and still be a successful result. Setup/auth errors count
 within those 10 minutes. Observer hints are recorded as assistance, not independent success.
 
 ## Observation and debrief
