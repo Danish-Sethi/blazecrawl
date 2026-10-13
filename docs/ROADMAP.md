@@ -13,6 +13,8 @@ priorities follow real usage and contributor interest.
 * screenshot API and CLI output, full-page capture, and a configurable PNG cap
 * optional browser-pool Prometheus metrics, disabled by default
 * Redis-backed job persistence and opt-in disk checkpoints, including restart resume
+* shared per-host crawl-delay/concurrency and token buckets, bounded HTTP backoff, and a process-wide fetch-attempt budget
+* optional operator-supplied upstream proxies with locally validated-IP CONNECT for static and browser fetches
 
 ## Next (0.2)
 * pluggable search-provider interface (community adapters)

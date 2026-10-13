@@ -10,13 +10,20 @@ certificate verification semantics.
 from __future__ import annotations
 
 import asyncio
-import socket
 from typing import Any
 from urllib.parse import urlsplit
 
+from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.ip_utils import is_blocked_address, parse_ip_literal
 from blazecrawl_core.network.resolver import Resolver, SystemResolver
 from blazecrawl_core.network.ssrf import SSRFValidationError
+from blazecrawl_core.network.upstream_proxy import (
+    UpstreamProxy,
+    close_writer,
+    open_pinned_connection,
+)
+
+logger = get_logger(__name__)
 
 _MAX_HEADER = 64 * 1024
 _MAX_LINE = 8192
@@ -30,11 +37,19 @@ class BrowserEgressProxy:
         *,
         max_connections: int = 128,
         resolver: Resolver | None = None,
+        upstream_proxy_url: str | None = None,
+        connect_timeout: float = _CONNECT_TIMEOUT,
+        read_timeout: float = _IDLE_TIMEOUT,
     ) -> None:
         self._server: asyncio.AbstractServer | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._slots = asyncio.Semaphore(max_connections)
         self._resolver = resolver or SystemResolver()
+        self._upstream = (
+            UpstreamProxy.parse(upstream_proxy_url) if upstream_proxy_url is not None else None
+        )
+        self._connect_timeout = connect_timeout
+        self._read_timeout = read_timeout
         self.port = 0
         self.connection_events: list[dict[str, Any]] = []
 
@@ -64,8 +79,23 @@ class BrowserEgressProxy:
     def _authority(value: str, *, default_port: int | None = None) -> tuple[str, int]:
         if any(ch in value for ch in ("@", "\\", "\r", "\n")):
             raise SSRFValidationError("Invalid proxy authority")
+        # httpcore emits unbracketed IPv6 proxy authorities. Normalize only a
+        # numeric IPv6 host with an explicit port; the usual SSRF checks still apply.
+        if value.count(":") > 1 and not value.startswith("["):
+            host, _, port_text = value.rpartition(":")
+            literal = parse_ip_literal(host)
+            if literal is None or literal.version != 6 or not port_text.isdecimal():
+                raise SSRFValidationError("Invalid proxy authority")
+            value = f"[{host}]:{port_text}"
         parsed = urlsplit(f"//{value}")
-        if parsed.username or parsed.password or not parsed.hostname:
+        if (
+            parsed.username is not None
+            or parsed.password is not None
+            or not parsed.hostname
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
             raise SSRFValidationError("Invalid proxy authority")
         try:
             port = parsed.port if parsed.port is not None else default_port
@@ -79,9 +109,13 @@ class BrowserEgressProxy:
         self, host: str, port: int
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         literal = parse_ip_literal(host)
-        raw_ips = [str(literal)] if literal else await self._resolver.resolve(host, port)
-        ips = [ip for ip in (parse_ip_literal(s) for s in raw_ips) if ip is not None]
-        if not ips or any(is_blocked_address(ip) for ip in ips):
+        raw_ips = (
+            [str(literal)]
+            if literal
+            else await asyncio.wait_for(self._resolver.resolve(host, port), self._connect_timeout)
+        )
+        ips = [parse_ip_literal(s) for s in raw_ips]
+        if not ips or any(ip is None or is_blocked_address(ip) for ip in ips):
             self.connection_events.append(
                 {
                     "event": "rejected",
@@ -93,30 +127,34 @@ class BrowserEgressProxy:
             raise SSRFValidationError("Browser proxy rejected prohibited address")
         last: Exception | None = None
         for ip in ips:
-            sock = socket.socket(
-                socket.AF_INET6 if ip.version == 6 else socket.AF_INET, socket.SOCK_STREAM
-            )
-            sock.setblocking(False)
-            address = (str(ip), port, 0, 0) if ip.version == 6 else (str(ip), port)
+            assert ip is not None
             try:
-                await asyncio.wait_for(
-                    asyncio.get_running_loop().sock_connect(sock, address),
-                    _CONNECT_TIMEOUT,
-                )
+                if self._upstream is None:
+                    connection = await open_pinned_connection(
+                        str(ip), port, timeout=self._connect_timeout
+                    )
+                else:
+                    connection = await self._upstream.connect(
+                        str(ip),
+                        port,
+                        connect_timeout=self._connect_timeout,
+                        read_timeout=self._read_timeout,
+                    )
                 self.connection_events.append(
                     {"event": "connected", "host": host, "port": port, "ip": str(ip)}
                 )
-                return await asyncio.open_connection(sock=sock)
+                return connection
             except (TimeoutError, OSError) as exc:
                 last = exc
-                sock.close()
         raise OSError("validated browser destination could not be reached") from last
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         upstream: tuple[asyncio.StreamReader, asyncio.StreamWriter] | None = None
         try:
             async with self._slots:
-                header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), _CONNECT_TIMEOUT)
+                header = await asyncio.wait_for(
+                    reader.readuntil(b"\r\n\r\n"), self._connect_timeout
+                )
                 if len(header) > _MAX_HEADER:
                     raise SSRFValidationError("Proxy headers too large")
                 lines = header.decode("latin-1").split("\r\n")
@@ -140,44 +178,59 @@ class BrowserEgressProxy:
                 upstream_reader, upstream_writer = upstream
                 if method == "CONNECT":
                     writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                    await writer.drain()
+                    await asyncio.wait_for(writer.drain(), self._connect_timeout)
                 else:
                     parsed = urlsplit(target)
                     origin = parsed.path or "/"
                     if parsed.query:
                         origin += "?" + parsed.query
                     rewritten = (
-                        f"{method} {origin} HTTP/1.1\r\n" + "\r\n".join(lines[1:]) + "\r\n\r\n"
+                        f"{method} {origin} HTTP/1.1\r\n"
+                        + "\r\n".join(
+                            line
+                            for line in lines[1:-2]
+                            if not line.lower().startswith(
+                                ("proxy-authorization:", "proxy-connection:")
+                            )
+                        )
+                        + "\r\n\r\n"
                     )
                     upstream_writer.write(rewritten.encode("latin-1"))
-                    await upstream_writer.drain()
+                    await asyncio.wait_for(upstream_writer.drain(), self._connect_timeout)
                 await self._tunnel(reader, writer, upstream_reader, upstream_writer)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            self.connection_events.append({"event": "failed", "reason": type(exc).__name__})
+            logger.warning("Egress proxy request failed", reason=type(exc).__name__)
             if not writer.is_closing():
                 writer.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
-                await writer.drain()
+                await asyncio.wait_for(writer.drain(), self._connect_timeout)
         finally:
             if upstream is not None:
-                upstream[1].close()
-                await upstream[1].wait_closed()
-            writer.close()
-            await writer.wait_closed()
+                await close_writer(upstream[1])
+            await close_writer(writer)
 
     async def _tunnel(self, client_reader, client_writer, upstream_reader, upstream_writer) -> None:
         async def copy(source, destination):
             try:
                 while True:
-                    data = await asyncio.wait_for(source.read(65536), _IDLE_TIMEOUT)
+                    data = await asyncio.wait_for(source.read(65536), self._read_timeout)
                     if not data:
                         break
                     destination.write(data)
-                    await destination.drain()
+                    await asyncio.wait_for(destination.drain(), self._read_timeout)
             finally:
                 if not destination.is_closing():
                     destination.close()
 
-        await asyncio.gather(
-            copy(client_reader, upstream_writer), copy(upstream_reader, client_writer)
-        )
+        tasks = [
+            asyncio.create_task(copy(client_reader, upstream_writer)),
+            asyncio.create_task(copy(upstream_reader, client_writer)),
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

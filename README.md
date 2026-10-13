@@ -404,6 +404,20 @@ Poll until `status` is `completed`, `failed`, or `cancelled`; inspect `pages_fai
 
 ## Security model
 
+### Optional upstream proxy (source checkout)
+
+Set `EGRESS_UPSTREAM_PROXY=https://proxy.example:8443` to route both static
+fetches and browser traffic through an HTTP(S) CONNECT proxy; unset it for the
+default direct path. The endpoint must resolve exclusively to public addresses
+on every dial. Optional URL-encoded `username:password@` credentials are sent
+only in CONNECT negotiation; prefer HTTPS endpoints to protect them in transit.
+Paths other than `/`, queries, fragments, malformed credentials/ports, and SOCKS
+are rejected without printing credentials. The upstream must support numeric
+CONNECT for both HTTP and HTTPS destinations. Targets and redirects remain
+SSRF-validated and IP-pinned, with original Host and TLS verification intact.
+This setting is not in the published `v0.1.2` release.
+See [the upstream security contract](docs/SECURITY_MODEL.md#optional-upstream-proxy).
+
 **User-supplied URLs are untrusted input.** Static HTTP validates destinations and pins connections
 to approved addresses. Browser traffic passes through a validating loopback egress proxy, with
 request guards for redirects, subresources, and unsupported browser primitives.

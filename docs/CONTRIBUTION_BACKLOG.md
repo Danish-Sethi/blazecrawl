@@ -89,7 +89,7 @@ Difficulty legend: 🟢 good-first-issue · 🟡 intermediate · 🔴 advanced.
 
 ### INT-3 🟡 Redis-backed crawl queue backend
 - **Files:** `engine/crawler.py`, new `engine/queue/redis_backend.py`
-- **Status:** still open; durable single-process job storage in #65 does not provide distributed execution or worker leases.
+- **Status:** not implemented; durable single-process job storage in #65 does not provide distributed execution or worker leases.
 - **Acceptance:** `CRAWL_QUEUE_BACKEND=redis` runs jobs across processes; parity tests vs memory.
 
 ### INT-4 🟡 Screenshot output format
@@ -117,6 +117,7 @@ Difficulty legend: 🟢 good-first-issue · 🟡 intermediate · 🔴 advanced.
 
 ### INT-9 🟡 Per-host crawl-delay + concurrency limiting
 - **Files:** `engine/crawler.py`, `engine/robots.py`
+- **Status:** implemented in [#71](https://github.com/Danish-Sethi/blazecrawl/pull/71), closing #27; host scheduling is shared across concurrent crawl jobs.
 - **Acceptance:** honor robots `crawl-delay`; per-host semaphore; test.
 
 ### INT-10 🟡 Static-vs-browser routing heuristic tests
@@ -149,6 +150,7 @@ Difficulty legend: 🟢 good-first-issue · 🟡 intermediate · 🔴 advanced.
 
 ### ADV-1 🔴 Egress proxy support (SSRF-preserving)
 - **Files:** `network/egress.py`, `engine/browser_pool.py`
+- **Status:** implemented in [#70](https://github.com/Danish-Sethi/blazecrawl/pull/70), closing #30; static/browser CONNECT targets and proxy sockets are pinned to locally validated IPs.
 - **Acceptance:** optional user-supplied upstream proxy; proxy endpoint itself validated; target validation unconditional; tests prove no SSRF pivot.
 
 ### ADV-2 🔴 Plugin/extractor registry
@@ -173,6 +175,7 @@ Difficulty legend: 🟢 good-first-issue · 🟡 intermediate · 🔴 advanced.
 
 ### ADV-7 🔴 Adaptive politeness / rate governance
 - **Files:** `engine/crawler.py`
+- **Status:** implemented in [#71](https://github.com/Danish-Sethi/blazecrawl/pull/71), closing #32; bounded retries, Retry-After, and fetch-attempt accounting include browser fallback.
 - **Acceptance:** token-bucket per host, backoff on 429/5xx, global budget; tests.
 
 ### ADV-8 🔴 Structured-data (JSON-LD/microdata) hardening
