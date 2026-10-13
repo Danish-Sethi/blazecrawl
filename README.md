@@ -136,7 +136,8 @@ docker compose logs -f api
 ```
 
 Copy the first-run key, stop following logs, and use the same requests above.
-Compose also includes an optional Redis service for caching; crawl jobs remain in process.
+Compose also includes an optional Redis service for caching and crawl job persistence. Crawl jobs are
+stored in Redis when it is reachable; without it they remain in process and do not survive a restart.
 
 </details>
 
@@ -344,8 +345,10 @@ HTTP / Python / Node.js / CLI / MCP
 ```
 
 The default is a **single-node Python service** with an in-process crawl manager and memory cache.
-Redis caching is optional; a distributed/persistent crawl queue is not implemented in this release.
-Explore [the architecture](docs/ARCHITECTURE.md) and [the roadmap](docs/ROADMAP.md) before proposing extensions.
+Set `REDIS_URL` to persist crawl job state in Redis (memory is used if Redis is unreachable at startup).
+Persisted jobs stay readable after a restart, but crawls are not resumed: a job that was `queued` or
+`running` at restart is reported as `failed` with `interrupted by restart`. There is no distributed crawl
+queue in this release. Explore [the architecture](docs/ARCHITECTURE.md) and [the roadmap](docs/ROADMAP.md) before proposing extensions.
 
 ## Contributing
 

@@ -53,9 +53,17 @@ BlazeCrawl Core is a single-node, self-hostable web-data engine.
 fetch. If the extracted main content is too thin (JS-heavy page), it retries
 with the headless-browser path, which is also egress-guarded per request.
 
-## Crawl queue
+## Crawl queue and job persistence
 
-Single-node default uses an in-process job manager
-(`CRAWL_QUEUE_BACKEND=memory`), which is correct for one process. Set
-`REDIS_URL` + a Redis-backed backend for multi-process worker fleets; the job
-contract (`/v1/crawl` 202 → poll `GET /v1/crawl/{id}`) is identical.
+Crawls run as in-process tasks on a single node. Job state is snapshotted to a job store at each
+lifecycle transition (queued, running, finished, cancelled):
+
+- `memory` (default): process-local. Jobs are lost on restart.
+- `redis`: used when `REDIS_URL` is set and reachable at startup (requires the `redis` extra,
+  `pip install blazecrawl-core[redis]`). Jobs are stored under `bc:crawl:job:<job_id>` with no expiry;
+  delete those keys to purge them. If Redis is unreachable at startup, the API logs a warning and uses the
+  memory store.
+
+On startup, persisted jobs are loaded so `GET /v1/crawl/{id}` keeps working after a restart. Any job still
+`queued` or `running` is marked `failed` with `interrupted by restart`. Crawls are not resumed, and
+multi-process workers sharing one queue are not implemented.

@@ -23,7 +23,7 @@ from blazecrawl_core.api.schemas import (
 from blazecrawl_core.config import settings
 from blazecrawl_core.engine import cache
 from blazecrawl_core.engine.browser_pool import get_browser_pool
-from blazecrawl_core.engine.crawler import get_crawl_manager
+from blazecrawl_core.engine.crawler import close_crawl_manager, get_crawl_manager
 from blazecrawl_core.engine.mapper import map_site
 from blazecrawl_core.engine.scraper import scrape
 from blazecrawl_core.exceptions import BlazeCrawlError, get_status_code
@@ -43,9 +43,12 @@ async def lifespan(app: FastAPI):
         logger.warning("Browser pool failed to start; static-only mode", error=str(e))
     if auth.auth_enforced():
         auth.effective_api_key()  # ensure a key exists + is logged
+    # Load persisted crawl jobs before serving; jobs interrupted by the last shutdown are marked failed.
+    await get_crawl_manager()
     yield
     with suppress(Exception):
         await get_browser_pool().shutdown()
+    await close_crawl_manager()
 
 
 app = FastAPI(
@@ -168,8 +171,8 @@ async def crawl_endpoint(payload: CrawlRequest) -> CrawlJobResponse:
             detail={"error": "url_rejected", "message": str(e)},
         ) from e
 
-    manager = get_crawl_manager()
-    job = manager.create_job(
+    manager = await get_crawl_manager()
+    job = await manager.create_job(
         str(payload.url),
         payload.max_pages,
         payload.max_depth,
@@ -185,7 +188,7 @@ async def crawl_endpoint(payload: CrawlRequest) -> CrawlJobResponse:
 
 @app.get("/v1/crawl/{job_id}", dependencies=[Depends(auth.require_api_key)])
 async def crawl_status(job_id: str):
-    manager = get_crawl_manager()
+    manager = await get_crawl_manager()
     job = manager.get_job(job_id)
     if not job:
         raise HTTPException(
@@ -197,7 +200,7 @@ async def crawl_status(job_id: str):
 
 @app.delete("/v1/crawl/{job_id}", dependencies=[Depends(auth.require_api_key)])
 async def crawl_cancel(job_id: str):
-    manager = get_crawl_manager()
+    manager = await get_crawl_manager()
     ok = await manager.cancel(job_id)
     if not ok:
         raise HTTPException(

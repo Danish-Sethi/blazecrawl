@@ -64,7 +64,7 @@ class Settings:
         self.BROWSER_HEADLESS: bool = _env_bool("BROWSER_HEADLESS", True)
         self.DEFAULT_TIMEOUT_MS: int = _env_int("DEFAULT_TIMEOUT_MS", 30000)
 
-        # Caching (Redis optional; falls back to in-process when unset).
+        # Optional Redis: caching, and crawl job persistence (falls back to in-process if unreachable).
         self.REDIS_URL: str | None = os.environ.get("REDIS_URL") or None
         self.CACHE_DEFAULT_TTL_SECONDS: int = _env_int("CACHE_DEFAULT_TTL_SECONDS", 3600)
 

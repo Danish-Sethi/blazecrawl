@@ -3,6 +3,18 @@
 All notable changes to BlazeCrawl Core. Format follows Keep a Changelog;
 versioning follows SemVer.
 
+## [Unreleased]
+
+### Added
+- Crawl job persistence. When `REDIS_URL` is set and reachable at startup, crawl job state is stored in
+  Redis, so `GET /v1/crawl/{job_id}` keeps returning jobs after an API restart. If Redis is unreachable,
+  the API logs a warning and falls back to the in-memory store.
+
+### Changed
+- Crawl jobs that were `queued` or `running` when the API stopped are marked `failed` with
+  `error: "interrupted by restart"` on the next startup. Crawls are not resumed.
+- `GET /v1/crawl/{job_id}` also returns `max_depth`, `created_at`, and `finished_at`.
+
 ## [0.1.2] — Distribution integrity repair
 
 ### Fixed

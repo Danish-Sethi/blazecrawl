@@ -101,6 +101,9 @@ guarantee unprivileged user namespaces; BlazeCrawl itself is **not** a
 security sandbox — isolate untrusted crawling workloads with containers/VMs
 as appropriate for your threat model.
 
+When `REDIS_URL` is set, crawl job state (including fetched page Markdown) is written to Redis. Keep Redis on
+the internal network only, as the reference compose file does.
+
 ## Reporting
 
 See [../SECURITY.md](../SECURITY.md).
