@@ -11,8 +11,8 @@ Do not collect API keys, private URLs, names or raw terminal recordings. Partici
 is optional; people may stop at any point. Ask permission before taking notes.
 
 Before the clock: confirm Docker is installed/running with Linux containers, public
-internet access, a terminal, and Python 3 for the Bash output-display line (PowerShell
-needs no Python). Prerequisite installation time is recorded separately, not hidden.
+internet access, a terminal, and curl 7.71+ / Python 3 for the Bash path (PowerShell
+needs neither). Prerequisite installation time is recorded separately, not hidden.
 Use a confirmed publicly available pinned release, not a source checkout or `latest`.
 
 Read this neutral prompt: **"Using the README, start BlazeCrawl and show the Markdown

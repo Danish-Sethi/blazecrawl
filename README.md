@@ -65,7 +65,8 @@ confirms all five packages and the image passed public-registry checks. Until th
 **Recommended path:** Docker running Linux containers, with a working internet connection.
 The image supports **Linux x86_64 (amd64)**. On Apple Silicon, add `--platform linux/amd64`
 to `docker run` to use Docker Desktop emulation (slower; **not native ARM64 support**).
-Bash examples work on Linux/macOS; the PowerShell equivalent follows. No cloud account is needed.
+Bash examples use curl 7.71+ on Linux/macOS for bounded startup retries; the PowerShell
+equivalent follows. No cloud account is needed.
 Prefer Python? Use the [no-Docker option](#local-no-docker).
 
 ### 1. Start the API
@@ -96,7 +97,7 @@ export BLAZECRAWL_API_URL="http://127.0.0.1:8000"
 export BLAZECRAWL_API_KEY="blz_local_REPLACE_WITH_YOUR_KEY"
 
 # Wait for startup; connection refused means the server is not ready yet.
-curl --retry 30 --retry-connrefused --retry-delay 1 --max-time 5 \
+curl --retry 30 --retry-all-errors --retry-delay 1 --retry-max-time 90 --max-time 5 \
   -fsS "$BLAZECRAWL_API_URL/ready"
 
 curl -fsS "$BLAZECRAWL_API_URL/v1/scrape" \
