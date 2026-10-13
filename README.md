@@ -260,6 +260,7 @@ Prefer Node.js? See the [equivalent `npx` configuration](mcp/node/README.md).
 |---|---|
 | `GET /health` | Liveness, version, and runtime mode. |
 | `GET /ready` | Browser-pool, cache, and queue status. |
+| `GET /metrics` | Opt-in Prometheus browser-pool metrics (source checkout; disabled by default). |
 | `POST /v1/scrape` | One page to Markdown, HTML, text, links, images, or a PNG screenshot. |
 | `POST /v1/map` | Discover URLs from sitemaps and the link graph. |
 | `POST /v1/crawl` | Start an asynchronous, same-origin crawl. |
@@ -278,6 +279,36 @@ a base64-encoded PNG at `data.screenshot`. Screenshots always render in the brow
 whole scrollable page instead of the viewport (default `false`). A capture larger than `SCREENSHOT_MAX_BYTES`
 (default 5 MB of raw PNG bytes) is rejected with HTTP `413` and `error: "screenshot_too_large"`; no partial
 image is returned.
+
+### Optional pool metrics (source checkout)
+
+Install the `[metrics]` extra and set `METRICS_ENABLED=true` **before starting the server**:
+
+```bash
+pip install -e ".[metrics]"
+METRICS_ENABLED=true blazecrawl-server
+curl -fsS http://127.0.0.1:8000/metrics
+```
+
+With uv, use `uv sync --extra metrics` and `METRICS_ENABLED=true uv run --extra metrics blazecrawl-server`.
+In PowerShell, set `$env:METRICS_ENABLED = "true"` before launching the server.
+For a release containing this feature, the install extra is `blazecrawl-core[metrics]`;
+it is **not available in published v0.1.2**. An enabled exporter without the extra fails explicitly
+with installation instructions. With `METRICS_ENABLED=false` (the default), the optional
+dependency is not imported and `/metrics` returns 404.
+
+| Series | Meaning |
+|---|---|
+| `blazecrawl_browser_pool_size` | Actual existing contexts, idle plus active; zero before startup/after shutdown. |
+| `blazecrawl_browser_pool_active_contexts` | Currently acquired contexts, including release cleanup. |
+| `blazecrawl_browser_pool_errors_total` | Pool startup, acquisition, page setup, release, and recycling errors; intentional cancellation is excluded. |
+| `blazecrawl_browser_pool_page_creation_seconds` | Histogram of page creation/setup latency in seconds, including failed/cancelled attempts (`_bucket`, `_count`, `_sum`). |
+
+Counters and histograms survive browser-pool restarts and reset on process restart.
+Each process has its own registry; run one API worker for a single-node pool view.
+There are no URL, key, or exception labels and no default process collectors.
+The opt-in endpoint does not require the API bearer key: keep it on a trusted interface or
+restrict scraper access at your reverse proxy. It does not alter scrape authentication or egress.
 
 <details>
 <summary><strong>Map and crawl over HTTP, with a real walkthrough</strong></summary>

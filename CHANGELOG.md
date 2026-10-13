@@ -20,11 +20,21 @@ versioning follows SemVer.
   pages are not fetched again. Redis unreachable at startup logs a warning and falls back. (#9, #31)
 - Opt-in disk checkpoints (`CRAWL_CHECKPOINTS_ENABLED=true`) under the state directory, written atomically.
   Used when Redis is not configured or is unreachable.
+- Opt-in Prometheus `/metrics` endpoint via the `[metrics]` extra and
+  `METRICS_ENABLED=true`, exposing actual browser-pool size, active contexts,
+  lifecycle errors, and page-creation latency without URL/credential labels.
+  Disabled by default with no mandatory dependency; enabling without the extra
+  fails with actionable installation instructions.
 
 ### Changed
 - A normal shutdown suspends running crawls without marking them cancelled; they resume on the next startup.
   Only an explicit cancel is terminal.
 - `GET /v1/crawl/{job_id}` also returns `max_depth`, `created_at`, and `finished_at`.
+
+### Fixed
+- Browser-pool context/semaphore accounting on failed startup, restart,
+  acquisition failure, and cancellation; page-creation failures are counted
+  and release cleanup completes before a cancelled lease is returned.
 
 ## [0.1.2] — Distribution integrity repair
 

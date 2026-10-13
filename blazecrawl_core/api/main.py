@@ -60,6 +60,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+if settings.METRICS_ENABLED:
+    # Resolve optional metrics before the non-fatal browser startup handler.
+    _pool_metrics = get_browser_pool().metrics
+    assert _pool_metrics is not None
+
+    from fastapi.responses import Response
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        return Response(
+            content=generate_latest(_pool_metrics.registry),
+            headers={"Content-Type": CONTENT_TYPE_LATEST},
+        )
+
 
 @app.exception_handler(SSRFValidationError)
 async def _ssrf_handler(request, exc):  # noqa: ANN001

@@ -42,7 +42,7 @@ BlazeCrawl Core is a single-node, self-hostable web-data engine.
 1. **Single security boundary.** All network egress flows through
    `network/egress.py`. Nothing else may open a socket to a user-supplied URL.
 2. **Zero mandatory cloud.** The base install needs no GCP/Stripe/Vertex/etc.
-   Optional extras (`[redis]`, `[structured]`) add integrations.
+   Optional extras (`[redis]`, `[structured]`, `[metrics]`) add integrations.
 3. **Fail closed.** Invalid URLs, blocked addresses, and resolution errors
    abort before any IO.
 4. **Self-host first.** One `docker compose up` reaches a healthy, useful API.
@@ -77,3 +77,11 @@ that checkpoint are fetched again; completed pages are not. A normal shutdown st
 them cancelled, so they resume on the next startup. Only an explicit `DELETE /v1/crawl/{job_id}` makes a job
 `cancelled`. Cancelled, completed, and failed jobs are not resumed. Records that fail validation are logged and
 skipped. Multi-process workers sharing one queue are not implemented.
+
+## Browser-pool metrics
+
+The `[metrics]` extra plus `METRICS_ENABLED=true` enables `/metrics` with a dedicated
+process-local Prometheus registry. It reports actual context capacity/utilization,
+lifecycle errors, and page-creation latency; it never labels series with request
+URLs or credentials. Disabled deployments do not import `prometheus-client` or
+register the endpoint. See the [configuration and series reference](../README.md#optional-pool-metrics-source-checkout).
