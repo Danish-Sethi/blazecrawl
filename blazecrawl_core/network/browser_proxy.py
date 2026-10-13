@@ -178,7 +178,7 @@ class BrowserEgressProxy:
                 upstream_reader, upstream_writer = upstream
                 if method == "CONNECT":
                     writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                    await writer.drain()
+                    await asyncio.wait_for(writer.drain(), self._connect_timeout)
                 else:
                     parsed = urlsplit(target)
                     origin = parsed.path or "/"
@@ -196,7 +196,7 @@ class BrowserEgressProxy:
                         + "\r\n\r\n"
                     )
                     upstream_writer.write(rewritten.encode("latin-1"))
-                    await upstream_writer.drain()
+                    await asyncio.wait_for(upstream_writer.drain(), self._connect_timeout)
                 await self._tunnel(reader, writer, upstream_reader, upstream_writer)
         except asyncio.CancelledError:
             raise
@@ -205,7 +205,7 @@ class BrowserEgressProxy:
             logger.warning("Egress proxy request failed", reason=type(exc).__name__)
             if not writer.is_closing():
                 writer.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
-                await writer.drain()
+                await asyncio.wait_for(writer.drain(), self._connect_timeout)
         finally:
             if upstream is not None:
                 await close_writer(upstream[1])
@@ -219,7 +219,7 @@ class BrowserEgressProxy:
                     if not data:
                         break
                     destination.write(data)
-                    await destination.drain()
+                    await asyncio.wait_for(destination.drain(), self._read_timeout)
             finally:
                 if not destination.is_closing():
                     destination.close()
