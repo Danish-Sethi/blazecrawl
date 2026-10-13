@@ -75,7 +75,10 @@ def origins():
 
 
 @pytest.mark.parametrize("path", ["/page", "/same", "/cross", "/host", "/chain"])
-async def test_real_browser_scopes_headers_on_every_hop_and_resource(origins, monkeypatch, path):
+@pytest.mark.parametrize("screenshot", [False, True])
+async def test_real_browser_scopes_headers_on_every_hop_and_resource(
+    origins, monkeypatch, path, screenshot
+):
     urls, received = origins
     validations = []
 
@@ -115,10 +118,19 @@ async def test_real_browser_scopes_headers_on_every_hop_and_resource(origins, mo
         )
         monkeypatch.setattr(scraper, "get_browser_pool", lambda: pool)
         try:
-            status, html, final_url = await scraper._fetch_browser(
-                urls[0] + path, 10000, "BaselineBrowser/1.0", CUSTOM
+            status, html, final_url, png = await scraper._fetch_browser(
+                urls[0] + path,
+                10000,
+                "BaselineBrowser/1.0",
+                CUSTOM,
+                screenshot=screenshot,
+                full_page=screenshot,
             )
             assert status == 200
+            if screenshot:
+                assert png.startswith(b"\x89PNG\r\n\x1a\n")
+            else:
+                assert png is None
             assert "Header fixture" in html
             if path == "/host":
                 assert final_url == urls[0].replace("127.0.0.1", "localhost") + "/page"

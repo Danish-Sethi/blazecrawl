@@ -234,7 +234,9 @@ async def scrape(
         if words < _MIN_STATIC_WORDS and status == 200:
             logger.info("Static content thin; retrying with browser", url=url, words=words)
             try:
-                bstatus, bhtml, bfinal, _ = await _fetch_browser(url, timeout_ms, user_agent, headers)
+                bstatus, bhtml, bfinal, _ = await _fetch_browser(
+                    url, timeout_ms, user_agent, headers
+                )
                 bext = await extractor.extract(bhtml, bfinal, opts)
                 if len((bext.markdown or "").split()) > words:
                     return _to_result(url, bstatus, bext, "browser", t0, bfinal)

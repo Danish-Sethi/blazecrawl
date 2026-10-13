@@ -1,5 +1,6 @@
 """Header validation, cache compatibility and pinned outbound forwarding."""
 
+import base64
 import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -113,6 +114,15 @@ def test_legacy_keys_and_canonical_header_order():
     assert "fake-demo-token" not in first
 
 
+@pytest.mark.parametrize("full_page", [False, True])
+def test_legacy_screenshot_keys_and_capture_options_are_preserved(full_page):
+    base = f"{URL}|{['screenshot']}|1|auto|BlazeCrawl/0.1.0|full_page={full_page}"
+    legacy = "bc:scrape:" + hashlib.sha256(base.encode()).hexdigest()
+    assert cache.make_key(URL, ["screenshot"], True, full_page=full_page) == legacy
+    assert cache.make_key(URL, ["screenshot"], True, full_page=full_page, headers={}) == legacy
+    assert cache.make_key(URL, ["screenshot"], True, full_page=full_page, headers=CUSTOM) != legacy
+
+
 async def test_api_cache_keeps_authenticated_results_isolated(monkeypatch):
     from blazecrawl_core.api import main
 
@@ -128,6 +138,38 @@ async def test_api_cache_keeps_authenticated_results_isolated(monkeypatch):
     assert fetch.call_args.kwargs["headers"] == {k.lower(): v for k, v in CUSTOM.items()}
     await main.scrape_endpoint(ScrapeRequest(url=URL))
     await main.scrape_endpoint(ScrapeRequest(url=URL, headers={"X-Custom-Token": "other"}))
+    assert fetch.await_count == 3
+
+
+async def test_screenshot_api_cache_keeps_headers_and_capture_sizes_isolated(monkeypatch):
+    from blazecrawl_core.api import main
+
+    monkeypatch.setattr(cache, "_cache", cache._MemoryCache())
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode("ascii")
+    fetch = AsyncMock(return_value=SimpleNamespace(to_dict=lambda: {"screenshot": encoded}))
+    monkeypatch.setattr(main, "scrape", fetch)
+    payload = ScrapeRequest(url=URL, formats=["screenshot"], full_page=True, headers=CUSTOM)
+    first = await main.scrape_endpoint(payload)
+    reordered = {k.lower(): v for k, v in reversed(list(CUSTOM.items()))}
+    hit = await main.scrape_endpoint(
+        ScrapeRequest(url=URL, formats=["screenshot"], full_page=True, headers=reordered)
+    )
+    assert first.data == {"screenshot": encoded}
+    assert hit.data == {"screenshot": encoded, "cached": True}
+    assert fetch.await_count == 1
+    assert fetch.call_args.kwargs["full_page"] is True
+    assert fetch.call_args.kwargs["headers"] == validate_headers(CUSTOM)
+    await main.scrape_endpoint(
+        ScrapeRequest(url=URL, formats=["screenshot"], full_page=False, headers=CUSTOM)
+    )
+    await main.scrape_endpoint(
+        ScrapeRequest(
+            url=URL,
+            formats=["screenshot"],
+            full_page=True,
+            headers={"X-Custom-Token": "other"},
+        )
+    )
     assert fetch.await_count == 3
 
 
@@ -285,7 +327,7 @@ async def test_static_scraper_forwards_validated_headers(outbound):
 async def test_auto_fallback_keeps_header_policy(monkeypatch):
     html = "<html><body><article><p>Header demo</p></article></body></html>"
     static = AsyncMock(side_effect=OSError("fixture failure"))
-    browser = AsyncMock(return_value=(200, html, URL))
+    browser = AsyncMock(return_value=(200, html, URL, None))
     monkeypatch.setattr(scraper, "_fetch_static", static)
     monkeypatch.setattr(scraper, "_fetch_browser", browser)
     result = await scraper.scrape(URL, headers=CUSTOM)
