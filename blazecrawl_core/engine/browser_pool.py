@@ -20,7 +20,7 @@ import contextlib
 import random
 import time
 from collections import deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
@@ -28,9 +28,13 @@ from blazecrawl_core.config import settings
 from blazecrawl_core.exceptions import (
     BlazeCrawlError,
     BrowserPoolExhaustedError,
+    ScreenshotTooLargeError,
 )
 from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.browser_proxy import BrowserEgressProxy
+
+if TYPE_CHECKING:
+    from blazecrawl_core.engine.metrics import BrowserPoolMetrics
 
 logger = get_logger(__name__)
 
@@ -85,6 +89,26 @@ def _guard_new_pages(context: BrowserContext) -> None:
     install_context_popup_ssrf_guard(context)
 
 
+def enforce_screenshot_cap(png: bytes, max_bytes: int) -> bytes:
+    """Return ``png`` unchanged, or raise if it exceeds ``max_bytes``.
+
+    Callers never receive a truncated image: the whole payload is accepted or rejected.
+    """
+    if len(png) > max_bytes:
+        raise ScreenshotTooLargeError(
+            f"Screenshot is {len(png)} bytes, which exceeds the {max_bytes}-byte limit "
+            "(SCREENSHOT_MAX_BYTES).",
+            details={"size_bytes": len(png), "max_bytes": max_bytes},
+        )
+    return png
+
+
+async def take_screenshot(page: Page, *, full_page: bool, max_bytes: int) -> bytes:
+    """Capture ``page`` as PNG, rejecting the whole capture if it exceeds ``max_bytes``."""
+    png = await page.screenshot(type="png", full_page=full_page)
+    return enforce_screenshot_cap(png, max_bytes)
+
+
 class BrowserPool:
     """Manages a pool of reusable Playwright browser contexts (singleton)."""
 
@@ -107,13 +131,17 @@ class BrowserPool:
         self._available_contexts: asyncio.Queue[BrowserContext] = asyncio.Queue()
         self._all_contexts: list[BrowserContext] = []
         self._semaphore: asyncio.Semaphore | None = None
-        self._pool_lock = asyncio.Lock()
         self._total_pages_created = 0
         self._total_errors = 0
         self._page_creation_times: deque[float] = deque(maxlen=METRICS_WINDOW_SIZE)
-        self._active_count = 0
+        self._active_contexts: dict[BrowserContext, asyncio.Semaphore] = {}
         self._restart_attempts = 0
         self._is_shutdown = True
+        self.metrics: BrowserPoolMetrics | None = None
+        if settings.METRICS_ENABLED:
+            from blazecrawl_core.engine.metrics import BrowserPoolMetrics
+
+            self.metrics = BrowserPoolMetrics(self)
         self._initialized = True
 
     @classmethod
@@ -133,12 +161,22 @@ class BrowserPool:
                 "Accept-Encoding": "gzip, deflate, br",
             },
         )
-        await context.add_init_script(
-            "() => { Object.defineProperty(navigator, 'webdriver', "
-            "{ get: () => undefined, configurable: true }); }"
-        )
-        _guard_new_pages(context)
+        try:
+            await context.add_init_script(
+                "() => { Object.defineProperty(navigator, 'webdriver', "
+                "{ get: () => undefined, configurable: true }); }"
+            )
+            _guard_new_pages(context)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await context.close()
+            raise
         return context
+
+    def _record_error(self) -> None:
+        self._total_errors += 1
+        if self.metrics is not None:
+            self.metrics.errors.inc()
 
     async def startup(self) -> None:
         async with self._cls_lock():
@@ -162,94 +200,120 @@ class BrowserPool:
                     await self._available_contexts.put(context)
                 logger.info("Browser pool started", contexts=len(self._all_contexts))
             except Exception as e:
+                self._record_error()
                 logger.error("Failed to start browser pool", error=str(e))
+                await self._close_resources()
                 raise BrowserPoolError(f"Failed to start browser pool: {e}") from e
+            except asyncio.CancelledError:
+                await self._close_resources()
+                raise
 
     async def shutdown(self) -> None:
         async with self._cls_lock():
             if self._is_shutdown:
                 return
-            self._is_shutdown = True
-            for context in self._all_contexts:
-                with contextlib.suppress(Exception):
-                    await context.close()
-            if self._browser:
-                with contextlib.suppress(Exception):
-                    await self._browser.close()
-            if self._playwright:
-                with contextlib.suppress(Exception):
-                    await self._playwright.stop()
-            if self._egress_proxy:
-                with contextlib.suppress(Exception):
-                    await self._egress_proxy.close()
-            self._egress_proxy = None
-            self._browser = None
-            self._playwright = None
+            await self._close_resources()
             logger.info("Browser pool shutdown complete")
+
+    async def _close_resources(self) -> None:
+        self._is_shutdown = True
+        contexts, self._all_contexts = self._all_contexts, []
+        browser, self._browser = self._browser, None
+        playwright, self._playwright = self._playwright, None
+        proxy, self._egress_proxy = self._egress_proxy, None
+        self._available_contexts = asyncio.Queue()
+        self._active_contexts.clear()
+        self._semaphore = None
+        for resource in [*contexts, browser, proxy]:
+            if resource is not None:
+                with contextlib.suppress(Exception):
+                    await resource.close()
+        if playwright is not None:
+            with contextlib.suppress(Exception):
+                await playwright.stop()
 
     async def acquire(self, timeout_ms: int = 30000) -> BrowserContext:
         if self._browser is None or self._is_shutdown:
             await self.startup()
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        semaphore = self._semaphore
+        available = self._available_contexts
         timeout_s = timeout_ms / 1000
+        acquired = False
+        context = None
         try:
-            await asyncio.wait_for(self._semaphore.acquire(), timeout=timeout_s)
-        except TimeoutError:
-            self._total_errors += 1
-            raise BrowserPoolExhaustedError(
-                "No available browser contexts. Please try again later.",
-                details={"pool_size": self.pool_size, "timeout_ms": timeout_ms},
-            ) from None
-        try:
-            context = await asyncio.wait_for(
-                self._available_contexts.get(), timeout=min(timeout_s, 5.0)
-            )
-        except TimeoutError:
-            self._semaphore.release()
-            self._total_errors += 1
-            raise BrowserPoolExhaustedError(
-                "No available browser contexts.",
-                details={"pool_size": self.pool_size, "timeout_ms": timeout_ms},
-            ) from None
-        except Exception:
-            self._semaphore.release()
-            raise
-        if not await self._is_context_healthy(context):
-            await self._recycle_context(context)
-            try:
-                context = await asyncio.wait_for(self._available_contexts.get(), timeout=5.0)
-            except TimeoutError:
-                self._semaphore.release()
+            await asyncio.wait_for(semaphore.acquire(), timeout=timeout_s)
+            acquired = True
+            context = await asyncio.wait_for(available.get(), timeout=min(timeout_s, 5.0))
+            if not await self._is_context_healthy(context):
+                self._record_error()
+                await self._recycle_context(context)
+                context = None
+                context = await asyncio.wait_for(available.get(), timeout=min(timeout_s, 5.0))
+            if self._is_shutdown or semaphore is not self._semaphore:
                 raise BrowserPoolExhaustedError(
-                    "No healthy browser contexts available.",
+                    "Browser pool restarted during context acquisition. Please try again.",
                     details={"pool_size": self.pool_size},
+                )
+        except BaseException as exc:
+            if acquired:
+                semaphore.release()
+            if context in self._all_contexts and context not in self._active_contexts:
+                available.put_nowait(context)
+            if isinstance(exc, Exception):
+                self._record_error()
+            if isinstance(exc, TimeoutError):
+                raise BrowserPoolExhaustedError(
+                    "No available browser contexts. Please try again later.",
+                    details={"pool_size": self.pool_size, "timeout_ms": timeout_ms},
                 ) from None
-        async with self._pool_lock:
-            self._active_count += 1
+            raise
+        self._active_contexts[context] = semaphore
         return context
 
     async def release(self, context: BrowserContext) -> None:
+        # Finish cleanup even if the caller is cancelled while returning its lease.
+        cleanup = asyncio.create_task(self._release_context(context))
         try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
+
+    async def _release_context(self, context: BrowserContext) -> None:
+        semaphore = self._active_contexts.get(context)
+        if semaphore is None:
+            return
+        try:
+            if context not in self._all_contexts:
+                return
             if not await self._is_context_healthy(context):
+                self._record_error()
                 await self._recycle_context(context)
                 return
             for page in context.pages:
-                with contextlib.suppress(Exception):
+                try:
                     await page.close()
+                except Exception as exc:
+                    self._record_error()
+                    logger.warning("Failed to close browser page", error=str(exc))
             try:
                 await context.clear_cookies()
-            except Exception:
+            except Exception as exc:
+                self._record_error()
+                logger.warning("Failed to clear browser context", error=str(exc))
                 await self._recycle_context(context)
                 return
-            await self._available_contexts.put(context)
-        except Exception:
+            if context in self._all_contexts:
+                self._available_contexts.put_nowait(context)
+        except Exception as exc:
+            self._record_error()
+            logger.warning("Failed to release browser context", error=str(exc))
             await self._recycle_context(context)
         finally:
-            async with self._pool_lock:
-                self._active_count = max(0, self._active_count - 1)
-            if self._semaphore:
-                self._semaphore.release()
+            self._active_contexts.pop(context, None)
+            semaphore.release()
 
     async def _is_context_healthy(self, context: BrowserContext) -> bool:
         try:
@@ -262,17 +326,21 @@ class BrowserPool:
             return False
 
     async def _recycle_context(self, old_context: BrowserContext) -> None:
-        with contextlib.suppress(Exception):
-            await old_context.close()
         if old_context in self._all_contexts:
             self._all_contexts.remove(old_context)
+        with contextlib.suppress(Exception):
+            await old_context.close()
         if self._browser and not self._is_shutdown:
+            browser = self._browser
             try:
                 new_context = await self._create_context()
+                if browser is not self._browser or self._is_shutdown:
+                    await new_context.close()
+                    return
                 self._all_contexts.append(new_context)
-                await self._available_contexts.put(new_context)
+                self._available_contexts.put_nowait(new_context)
             except Exception as e:
-                self._total_errors += 1
+                self._record_error()
                 logger.error("Failed to create replacement context", error=str(e))
                 if self._total_errors % max(1, self.pool_size) == 0:
                     asyncio.create_task(self._restart_browser())
@@ -285,21 +353,28 @@ class BrowserPool:
         blocked_types: set[str] | None = None,
     ) -> Page:
         start_time = time.perf_counter()
-        page = await context.new_page()
-        page.set_default_timeout(timeout_ms)
-        if block_resources:
-            types_to_block = blocked_types or DEFAULT_BLOCKED_RESOURCES
+        try:
+            page = await context.new_page()
+            page.set_default_timeout(timeout_ms)
+            if block_resources:
+                types_to_block = blocked_types or DEFAULT_BLOCKED_RESOURCES
 
-            async def handle_route(route: Any) -> None:
-                if route.request.resource_type in types_to_block:
-                    await route.abort()
-                else:
-                    await route.continue_()
+                async def handle_route(route: Any) -> None:
+                    if route.request.resource_type in types_to_block:
+                        await route.abort()
+                    else:
+                        await route.continue_()
 
-            await page.route("**/*", handle_route)
-        self._page_creation_times.append(time.perf_counter() - start_time)
-        self._total_pages_created += 1
-        return page
+                await page.route("**/*", handle_route)
+            self._page_creation_times.append(time.perf_counter() - start_time)
+            self._total_pages_created += 1
+            return page
+        except Exception:
+            self._record_error()
+            raise
+        finally:
+            if self.metrics is not None:
+                self.metrics.page_creation.observe(time.perf_counter() - start_time)
 
     async def health_check(self) -> dict[str, Any]:
         avg = (
@@ -313,7 +388,7 @@ class BrowserPool:
                 connected = bool(self._browser.is_connected())
         return {
             "pool_size": self.pool_size,
-            "active_contexts": self._active_count,
+            "active_contexts": len(self._active_contexts),
             "idle_contexts": self._available_contexts.qsize(),
             "total_pages_created": self._total_pages_created,
             "total_errors": self._total_errors,

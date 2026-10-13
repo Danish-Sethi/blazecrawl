@@ -377,7 +377,7 @@ async def test_auto_browser_fallback_is_another_budgeted_page_attempt(web, monke
     monkeypatch.setattr(
         scraper, "_fetch_static", AsyncMock(return_value=(200, "<p>Thin</p>", URL, None))
     )
-    browser = AsyncMock(return_value=(200, HTML, URL, None))
+    browser = AsyncMock(return_value=(200, HTML, URL, None, None))
     monkeypatch.setattr(scraper, "_fetch_browser", browser)
     job = await mgr.create_job(URL, 1, 0)
     await settle(mgr, job)
@@ -398,9 +398,9 @@ async def test_successful_browser_fallback_obeys_robots_delay_and_counts_both_at
         times.append(clock())
         return 200, "<p>Thin</p>", url, None
 
-    async def browser(url, *_args):
+    async def browser(url, *_args, **_kwargs):
         times.append(clock())
-        return 200, HTML, url, None
+        return 200, HTML, url, None, None
 
     monkeypatch.setattr(scraper, "_fetch_static", static)
     monkeypatch.setattr(scraper, "_fetch_browser", browser)
@@ -428,7 +428,9 @@ async def test_browser_retry_respects_page_attempt_limit(web, monkeypatch):
     monkeypatch.setattr(
         scraper, "_fetch_static", AsyncMock(return_value=(200, "<p>Thin</p>", URL, None))
     )
-    monkeypatch.setattr(scraper, "_fetch_browser", AsyncMock(return_value=(503, HTML, URL, "5")))
+    monkeypatch.setattr(
+        scraper, "_fetch_browser", AsyncMock(return_value=(503, HTML, URL, None, "5"))
+    )
     job = await mgr.create_job(URL, 1, 0)
     await settle(mgr, job)
     assert job.pages_failed == 1 and job.pages_crawled == 0

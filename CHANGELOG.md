@@ -10,17 +10,35 @@ versioning follows SemVer.
   crawl-delay; bounded 429/5xx retries with Retry-After support and a finite manager-wide
   page-fetch-attempt budget. Retries preserve the checkpoint frontier; cancellation releases
   permits, and exhausted budgets fail jobs explicitly. Settings and restart scope are documented. (#27, #32)
+- `formats: ["screenshot"]` on `POST /v1/scrape` returns a base64-encoded PNG in `data.screenshot`.
+  Screenshots always render in the browser, so `render: "static"` is rejected with HTTP 422.
+- `full_page` boolean on `POST /v1/scrape` (default `false`) captures the full scrollable page for screenshots.
+- `SCREENSHOT_MAX_BYTES` setting (default 5 MB of raw PNG bytes). Captures over the cap are rejected with
+  HTTP 413 (`error: "screenshot_too_large"`) and never return partial data. The cap also applies to cached
+  screenshots. The setting must be a positive integer.
+- `blazecrawl scrape --formats screenshot --output page.png` (with `--full-page` for the whole page) in the
+  source-checkout CLI.
 - Crawl jobs checkpoint their frontier, visited URLs, results, and counters after every page. With
   `REDIS_URL` set and reachable at startup, checkpoints go to Redis, one transaction each; otherwise they stay
   in memory. Unfinished crawls resume after a restart, so `GET /v1/crawl/{job_id}` keeps working and completed
   pages are not fetched again. Redis unreachable at startup logs a warning and falls back. (#9, #31)
 - Opt-in disk checkpoints (`CRAWL_CHECKPOINTS_ENABLED=true`) under the state directory, written atomically.
   Used when Redis is not configured or is unreachable.
+- Opt-in Prometheus `/metrics` endpoint via the `[metrics]` extra and
+  `METRICS_ENABLED=true`, exposing actual browser-pool size, active contexts,
+  lifecycle errors, and page-creation latency without URL/credential labels.
+  Disabled by default with no mandatory dependency; enabling without the extra
+  fails with actionable installation instructions.
 
 ### Changed
 - A normal shutdown suspends running crawls without marking them cancelled; they resume on the next startup.
   Only an explicit cancel is terminal.
 - `GET /v1/crawl/{job_id}` also returns `max_depth`, `created_at`, and `finished_at`.
+
+### Fixed
+- Browser-pool context/semaphore accounting on failed startup, restart,
+  acquisition failure, and cancellation; page-creation failures are counted
+  and release cleanup completes before a cancelled lease is returned.
 
 ## [0.1.2] — Distribution integrity repair
 

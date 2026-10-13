@@ -26,6 +26,10 @@ class CacheError(BlazeCrawlError):
     """Raised when a cache operation fails critically."""
 
 
+class ScreenshotTooLargeError(BlazeCrawlError):
+    """Raised when a captured screenshot exceeds the configured byte cap."""
+
+
 class AuthenticationError(BlazeCrawlError):
     """Raised when authentication fails."""
 
@@ -54,6 +58,7 @@ EXCEPTION_STATUS_CODES: dict[type[BlazeCrawlError], int] = {
     ScrapeTimeoutError: 408,
     BrowserPoolExhaustedError: 503,
     CacheError: 500,
+    ScreenshotTooLargeError: 413,
     AuthenticationError: 401,
     RateLimitExceededError: 429,
     ServiceError: 500,

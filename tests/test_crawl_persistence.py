@@ -181,6 +181,30 @@ async def test_shutdown_suspends_and_restart_resumes_without_refetching(store_fa
     assert web.started == [SEED, A, B, B, C, D]  # only the in-flight page was fetched again
 
 
+async def test_shutdown_joins_crawl_tasks_before_closing_store(web):
+    web.blocked = {B}
+    store = MemoryJobStore()
+    manager = CrawlManager(store)
+    job = await manager.create_job(SEED, 10, 2)
+    await _until(lambda: len(web.completed) == 2)
+    task = manager._tasks[job.job_id]
+
+    closed_while_task_running: list[bool] = []
+    close = store.close
+
+    async def checked_close():
+        closed_while_task_running.append(not task.done())
+        await close()
+
+    store.close = checked_close
+    await manager.shutdown()
+
+    assert closed_while_task_running == [False]
+    assert task.done()
+    state, _ = (await _stored(store))[job.job_id]
+    assert state["status"] == "running"
+
+
 async def test_user_cancel_stays_cancelled_after_restart(store_factory, web):
     web.blocked = {B}
     store = store_factory()

@@ -16,6 +16,7 @@ import time
 
 from blazecrawl_core.config import settings
 from blazecrawl_core.logging import get_logger
+from blazecrawl_core.network.headers import validate_headers
 
 logger = get_logger(__name__)
 
@@ -75,8 +76,16 @@ def make_key(
     only_main_content: bool,
     render: str = "auto",
     user_agent: str = "BlazeCrawl/0.1.0",
+    full_page: bool = False,
+    headers: dict[str, str] | None = None,
 ) -> str:
+    normalized = validate_headers(headers)
     base = f"{url}|{sorted(formats or ['markdown'])}|{int(only_main_content)}|{render}|{user_agent}"
+    # full_page only changes screenshot output, so it only varies the key for screenshot requests.
+    if "screenshot" in (formats or []):
+        base += f"|full_page={full_page}"
+    if normalized:
+        base += f"|{sorted(normalized.items())}"
     return "bc:scrape:" + hashlib.sha256(base.encode()).hexdigest()
 
 
@@ -86,9 +95,13 @@ async def get_cached(
     only_main_content: bool,
     render: str = "auto",
     user_agent: str = "BlazeCrawl/0.1.0",
+    full_page: bool = False,
+    headers: dict[str, str] | None = None,
 ) -> dict | None:
     try:
-        raw = await _get_cache().get(make_key(url, formats, only_main_content, render, user_agent))
+        raw = await _get_cache().get(
+            make_key(url, formats, only_main_content, render, user_agent, full_page, headers)
+        )
         return json.loads(raw) if raw else None
     except Exception as e:
         logger.warning("Cache get failed", error=str(e))
@@ -103,10 +116,12 @@ async def set_cached(
     ttl: int | None = None,
     render: str = "auto",
     user_agent: str = "BlazeCrawl/0.1.0",
+    full_page: bool = False,
+    headers: dict[str, str] | None = None,
 ) -> None:
     try:
         await _get_cache().set(
-            make_key(url, formats, only_main_content, render, user_agent),
+            make_key(url, formats, only_main_content, render, user_agent, full_page, headers),
             json.dumps(payload),
             ttl or settings.CACHE_DEFAULT_TTL_SECONDS,
         )

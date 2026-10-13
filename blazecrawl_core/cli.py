@@ -9,6 +9,7 @@ Talks to a running BlazeCrawl Core server. Configure with:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -53,11 +54,38 @@ def _print(resp: httpx.Response, as_json: bool, output: Path | None = None) -> i
 
 
 def cmd_scrape(args: argparse.Namespace) -> int:
+    wants_png = "screenshot" in (args.formats or [])
+    if wants_png and not args.json and args.output is None:
+        print(
+            "--formats screenshot writes a PNG file: pass --output PATH (or --json).",
+            file=sys.stderr,
+        )
+        return 2
     body: dict = {"url": args.url, "render": args.render}
     if args.formats:
         body["formats"] = args.formats
+    if args.full_page:
+        body["full_page"] = True
     with _client() as c:
-        return _print(c.post("/v1/scrape", json=body), args.json, args.output)
+        resp = c.post("/v1/scrape", json=body)
+    if wants_png and not args.json:
+        return _write_screenshot(resp, args.output)
+    return _print(resp, args.json, args.output)
+
+
+def _write_screenshot(resp: httpx.Response, output: Path) -> int:
+    if resp.status_code >= 400:
+        return _print(resp, False)
+    encoded = (resp.json().get("data") or {}).get("screenshot")
+    if not encoded:
+        print("Server response did not include a screenshot.", file=sys.stderr)
+        return 1
+    try:
+        output.write_bytes(base64.b64decode(encoded))
+    except OSError as exc:
+        print(f"Could not write output to {output}: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def cmd_map(args: argparse.Namespace) -> int:
@@ -177,14 +205,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("scrape", help="Scrape a URL to Markdown")
     s.add_argument("url")
-    s.add_argument("--formats", nargs="+", choices=["markdown", "html", "text", "links", "images"])
+    s.add_argument(
+        "--formats",
+        nargs="+",
+        choices=["markdown", "html", "text", "links", "images", "screenshot"],
+    )
     s.add_argument("--render", choices=["auto", "static", "browser"], default="auto")
+    s.add_argument(
+        "--full-page",
+        action="store_true",
+        help="With --formats screenshot, capture the full scrollable page instead of the viewport",
+    )
     s.add_argument("--json", action="store_true")
     s.add_argument(
         "--output",
         type=Path,
         metavar="PATH",
-        help="Write output to a UTF-8 file instead of stdout (overwrites existing files)",
+        help=(
+            "Write output to a UTF-8 file instead of stdout (overwrites existing files). "
+            "With --formats screenshot, writes the PNG bytes instead."
+        ),
     )
     s.set_defaults(func=cmd_scrape)
 

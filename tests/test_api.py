@@ -1,6 +1,8 @@
 """API journey tests using FastAPI TestClient (auth-disabled loopback mode)."""
 
+import base64
 import os
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,12 +13,17 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from blazecrawl_core import __version__  # noqa: E402
 from blazecrawl_core.api.main import app  # noqa: E402
+from blazecrawl_core.config import settings  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(app) as c:
-        yield c
+    # settings is built at import time, so the env default above can lose to an earlier import.
+    # Pin auth-disabled on the settings object itself so these tests don't depend on import order.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(settings, "BLAZECRAWL_AUTH_DISABLED", True)
+        with TestClient(app) as c:
+            yield c
 
 
 def test_health(client):
@@ -83,7 +90,32 @@ def test_map_example_com(client):
     assert isinstance(r.json()["urls"], list)
 
 
-def test_crawl_lifecycle(client):
+def test_crawl_lifecycle(client, monkeypatch):
+    # Deterministic: the crawl runs against a fixed page result instead of live DNS, robots.txt or
+    # example.com. Real egress behaviour stays covered by the SSRF tests in this file and tests/security.
+    from blazecrawl_core.engine import crawler, robots
+    from blazecrawl_core.engine.scraper import ScrapeResult
+    from blazecrawl_core.network import ssrf
+
+    page = ScrapeResult(
+        url="https://example.com",
+        final_url="https://example.com/",
+        status_code=200,
+        markdown="# Example Domain",
+        html=None,
+        plaintext=None,
+        links=[],
+        images=None,
+        metadata={"title": "Example Domain"},
+        render="static",
+        duration_ms=1.0,
+    )
+    monkeypatch.setattr(crawler, "scrape", AsyncMock(return_value=page))
+    monkeypatch.setattr(crawler, "validate_and_pin", AsyncMock(return_value=None))
+    monkeypatch.setattr(robots, "is_allowed", AsyncMock(return_value=True))
+    monkeypatch.setattr(robots, "get_crawl_delay", AsyncMock(return_value=None))
+    monkeypatch.setattr(ssrf, "validate_and_pin", AsyncMock(return_value=None))
+
     r = client.post(
         "/v1/crawl", json={"url": "https://example.com", "max_pages": 1, "max_depth": 0}
     )
@@ -98,6 +130,7 @@ def test_crawl_lifecycle(client):
             break
         time.sleep(0.3)
     assert g.json()["status"] == "completed"
+    assert g.json()["pages"][0]["markdown"] == "# Example Domain"
 
 
 def test_crawl_blocks_ssrf(client):
@@ -107,3 +140,48 @@ def test_crawl_blocks_ssrf(client):
 
 def test_crawl_not_found(client):
     assert client.get("/v1/crawl/does-not-exist").status_code == 404
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def test_scrape_screenshot_returns_base64_png(client):
+    r = client.post(
+        "/v1/scrape",
+        json={"url": "https://example.com", "formats": ["screenshot"], "use_cache": False},
+    )
+    assert r.status_code == 200
+    png = base64.b64decode(r.json()["data"]["screenshot"], validate=True)
+    assert png.startswith(PNG_SIGNATURE)
+
+
+def test_scrape_screenshot_over_cap_returns_413_without_data(client, monkeypatch):
+    monkeypatch.setattr(settings, "SCREENSHOT_MAX_BYTES", 1024)
+    r = client.post(
+        "/v1/scrape",
+        json={"url": "https://example.com", "formats": ["screenshot"], "use_cache": False},
+    )
+    assert r.status_code == 413
+    body = r.json()
+    assert "data" not in body
+    assert body["detail"]["error"] == "screenshot_too_large"
+    assert body["detail"]["max_bytes"] == 1024
+
+
+def test_cached_screenshot_over_lowered_cap_returns_413(client, monkeypatch):
+    body = {"url": "https://example.com", "formats": ["screenshot"]}
+    first = client.post("/v1/scrape", json=body)
+    assert first.status_code == 200
+    monkeypatch.setattr(settings, "SCREENSHOT_MAX_BYTES", 1024)
+    r = client.post("/v1/scrape", json=body)
+    assert r.status_code == 413
+    assert "data" not in r.json()
+    assert r.json()["detail"]["error"] == "screenshot_too_large"
+
+
+def test_scrape_screenshot_rejects_static_render(client):
+    r = client.post(
+        "/v1/scrape",
+        json={"url": "https://example.com", "formats": ["screenshot"], "render": "static"},
+    )
+    assert r.status_code == 422

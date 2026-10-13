@@ -259,9 +259,11 @@ blazecrawl health
 
 Add `--json` for the full response. See [runnable examples](examples/README.md) for more.
 
-**Source-checkout extras:** `scrape --output page.md` and `doctor` are available in the current
-repository, **not the published `v0.1.2` CLI**. Follow [source setup](CONTRIBUTING.md#setup) to use them.
+**Source-checkout extras:** `scrape --output page.md`, `scrape --formats screenshot --output page.png`
+(add `--full-page` for the whole page), and `doctor` are available in the current repository, **not the
+published `v0.1.2` CLI**. Follow [source setup](CONTRIBUTING.md#setup) to use them.
 `--output` writes UTF-8 and overwrites an existing file; its parent directory must exist.
+With `--formats screenshot`, `--output` writes the PNG bytes, and `--json` returns the full response with the base64 screenshot.
 `doctor` checks Chromium and, when configured, server/key access.
 
 ### MCP
@@ -303,7 +305,8 @@ Prefer Node.js? See the [equivalent `npx` configuration](mcp/node/README.md).
 |---|---|
 | `GET /health` | Liveness, version, and runtime mode. |
 | `GET /ready` | Browser-pool, cache, and queue status. |
-| `POST /v1/scrape` | One page to Markdown, HTML, text, links, or images. |
+| `GET /metrics` | Opt-in Prometheus browser-pool metrics (source checkout; disabled by default). |
+| `POST /v1/scrape` | One page to Markdown, HTML, text, links, images, or a PNG screenshot. |
 | `POST /v1/map` | Discover URLs from sitemaps and the link graph. |
 | `POST /v1/crawl` | Start an asynchronous, same-origin crawl. |
 | `GET /v1/crawl/{job_id}` | Poll status and collected page data. |
@@ -312,8 +315,62 @@ Prefer Node.js? See the [equivalent `npx` configuration](mcp/node/README.md).
 All `/v1/` endpoints require your bearer key by default. Scrape `render` accepts `static`, `browser`,
 or `auto` (static first, browser fallback for thin content). See [table conversion limits](docs/MARKDOWN_TABLES.md)
 when working with tabular pages. The current source checkout also supports `user_agent` per scrape
-or crawl; it selects robots.txt rules for crawls. That field is **not in the published `v0.1.2` schema**.
+or crawl; it selects robots.txt rules for crawls. The source checkout also supports a `headers`
+field on scrape for custom outbound HTTP headers (User-Agent, Accept-Language, Authorization, etc.).
+Both fields are **not in the published `v0.1.2` schema**.
 Your running instance's `/docs` is the authoritative version-specific contract.
+
+**Screenshots (source checkout, not in the published `v0.1.2` schema):** `"formats": ["screenshot"]` returns
+a base64-encoded PNG at `data.screenshot`. Screenshots always render in the browser, so `render` must be
+`auto` or `browser`; `render: "static"` is rejected with HTTP `422`. Set `"full_page": true` to capture the
+whole scrollable page instead of the viewport (default `false`). A capture larger than `SCREENSHOT_MAX_BYTES`
+(default 5 MB of raw PNG bytes) is rejected with HTTP `413` and `error: "screenshot_too_large"`; no partial
+image is returned.
+
+Custom header names are case-insensitive HTTP tokens; duplicate names ignoring case are rejected.
+Values must be printable ASCII (no CR/LF or control bytes). Limits: 32 headers, 128 characters per
+name, 4096 per value, and 8192 total wire bytes; User-Agent is limited to 200 characters.
+Transport-managed headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`,
+`Keep-Alive`, `Proxy-Connection`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`,
+`Upgrade`, `HTTP2-Settings`, `Expect`) are rejected. A `headers["User-Agent"]` override wins over
+`user_agent` only on the initial origin (scheme, hostname and effective port). Static requests
+permanently drop supplied headers when a redirect changes origin; browser requests apply them only
+to initial-origin requests, including redirects and subresources. Other origins retain the baseline
+`user_agent`. SSRF checks remain enforced on every hop. Browser custom headers require the pool's
+Chromium interception support and fail closed if it cannot be installed.
+Cache keys ignore header ordering and name casing, isolate different values, and retain existing
+keys when no custom headers are supplied. See the [custom-header examples](examples/README.md)
+for fake-credential demonstrations; never send real secrets to public echo services.
+
+### Optional pool metrics (source checkout)
+
+Install the `[metrics]` extra and set `METRICS_ENABLED=true` **before starting the server**:
+
+```bash
+pip install -e ".[metrics]"
+METRICS_ENABLED=true blazecrawl-server
+curl -fsS http://127.0.0.1:8000/metrics
+```
+
+With uv, use `uv sync --extra metrics` and `METRICS_ENABLED=true uv run --extra metrics blazecrawl-server`.
+In PowerShell, set `$env:METRICS_ENABLED = "true"` before launching the server.
+For a release containing this feature, the install extra is `blazecrawl-core[metrics]`;
+it is **not available in published v0.1.2**. An enabled exporter without the extra fails explicitly
+with installation instructions. With `METRICS_ENABLED=false` (the default), the optional
+dependency is not imported and `/metrics` returns 404.
+
+| Series | Meaning |
+|---|---|
+| `blazecrawl_browser_pool_size` | Actual existing contexts, idle plus active; zero before startup/after shutdown. |
+| `blazecrawl_browser_pool_active_contexts` | Currently acquired contexts, including release cleanup. |
+| `blazecrawl_browser_pool_errors_total` | Pool startup, acquisition, page setup, release, and recycling errors; intentional cancellation is excluded. |
+| `blazecrawl_browser_pool_page_creation_seconds` | Histogram of page creation/setup latency in seconds, including failed/cancelled attempts (`_bucket`, `_count`, `_sum`). |
+
+Counters and histograms survive browser-pool restarts and reset on process restart.
+Each process has its own registry; run one API worker for a single-node pool view.
+There are no URL, key, or exception labels and no default process collectors.
+The opt-in endpoint does not require the API bearer key: keep it on a trusted interface or
+restrict scraper access at your reverse proxy. It does not alter scrape authentication or egress.
 
 <details>
 <summary><strong>Map and crawl over HTTP, with a real walkthrough</strong></summary>

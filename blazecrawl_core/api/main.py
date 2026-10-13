@@ -7,6 +7,7 @@ SSRF/egress security model is enforced on every outbound fetch.
 
 from __future__ import annotations
 
+import base64
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -22,11 +23,11 @@ from blazecrawl_core.api.schemas import (
 )
 from blazecrawl_core.config import settings
 from blazecrawl_core.engine import cache
-from blazecrawl_core.engine.browser_pool import get_browser_pool
+from blazecrawl_core.engine.browser_pool import enforce_screenshot_cap, get_browser_pool
 from blazecrawl_core.engine.crawler import close_crawl_manager, get_crawl_manager
 from blazecrawl_core.engine.mapper import map_site
 from blazecrawl_core.engine.scraper import scrape
-from blazecrawl_core.exceptions import BlazeCrawlError, get_status_code
+from blazecrawl_core.exceptions import BlazeCrawlError, ScreenshotTooLargeError, get_status_code
 from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.ssrf import SSRFValidationError
 
@@ -58,6 +59,21 @@ app = FastAPI(
     description="Security-first, self-hostable web-data engine (scrape / crawl / map).",
     lifespan=lifespan,
 )
+
+if settings.METRICS_ENABLED:
+    # Resolve optional metrics before the non-fatal browser startup handler.
+    _pool_metrics = get_browser_pool().metrics
+    assert _pool_metrics is not None
+
+    from fastapi.responses import Response
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        return Response(
+            content=generate_latest(_pool_metrics.registry),
+            headers={"Content-Type": CONTENT_TYPE_LATEST},
+        )
 
 
 @app.exception_handler(SSRFValidationError)
@@ -96,8 +112,15 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
                 payload.only_main_content,
                 payload.render,
                 payload.user_agent,
+                full_page=payload.full_page,
+                headers=payload.headers,
             )
             if hit is not None:
+                if hit.get("screenshot"):
+                    # Re-check against the current cap in case SCREENSHOT_MAX_BYTES was lowered since caching.
+                    enforce_screenshot_cap(
+                        base64.b64decode(hit["screenshot"]), settings.SCREENSHOT_MAX_BYTES
+                    )
                 return ScrapeResponse(success=True, data={**hit, "cached": True})
 
         result = await scrape(
@@ -107,6 +130,8 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
             timeout_ms=payload.timeout_ms,
             render=payload.render,
             user_agent=payload.user_agent,
+            full_page=payload.full_page,
+            headers=payload.headers,
         )
         data = result.to_dict()
         if payload.use_cache:
@@ -117,12 +142,23 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
                 data,
                 render=payload.render,
                 user_agent=payload.user_agent,
+                full_page=payload.full_page,
+                headers=payload.headers,
             )
         return ScrapeResponse(success=True, data=data)
     except SSRFValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "url_rejected", "message": str(e)},
+        ) from e
+    except ScreenshotTooLargeError as e:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": "screenshot_too_large",
+                "message": e.message,
+                "max_bytes": settings.SCREENSHOT_MAX_BYTES,
+            },
         ) from e
     except BlazeCrawlError as e:
         raise HTTPException(
