@@ -6,6 +6,14 @@ versioning follows SemVer.
 ## [Unreleased]
 
 ### Added
+- `formats: ["screenshot"]` on `POST /v1/scrape` returns a base64-encoded PNG in `data.screenshot`.
+  Screenshots always render in the browser, so `render: "static"` is rejected with HTTP 422.
+- `full_page` boolean on `POST /v1/scrape` (default `false`) captures the full scrollable page for screenshots.
+- `SCREENSHOT_MAX_BYTES` setting (default 5 MB of raw PNG bytes). Captures over the cap are rejected with
+  HTTP 413 (`error: "screenshot_too_large"`) and never return partial data. The cap also applies to cached
+  screenshots. The setting must be a positive integer.
+- `blazecrawl scrape --formats screenshot --output page.png` (with `--full-page` for the whole page) in the
+  source-checkout CLI.
 - Crawl jobs checkpoint their frontier, visited URLs, results, and counters after every page. With
   `REDIS_URL` set and reachable at startup, checkpoints go to Redis, one transaction each; otherwise they stay
   in memory. Unfinished crawls resume after a restart, so `GET /v1/crawl/{job_id}` keeps working and completed

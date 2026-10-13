@@ -72,7 +72,7 @@ covered by `tests/security/test_browser_subresource_isolation.py`.
 | Redirect pivot | Manual redirect following; each hop re-validated + re-pinned | `network/egress.py` |
 | Downgrade | `https→http` redirects blocked | `network/egress.py` |
 | Browser bypass | Playwright route guard re-validates every request incl. sub-resources + popups | `network/egress.py`, `engine/browser_pool.py` |
-| Bombs | `MAX_RESPONSE_BYTES` streaming cap, per-hop timeouts | `network/egress.py`, `config.py` |
+| Bombs | `MAX_RESPONSE_BYTES` streaming cap, per-hop timeouts; `SCREENSHOT_MAX_BYTES` cap on screenshot PNGs (413, never partial) | `network/egress.py`, `config.py`, `engine/browser_pool.py` |
 | Parser confusion | Reject userinfo URLs, legacy/hex/decimal/octal IPs, IPv4-mapped IPv6, non-http(s) schemes | `network/ip_utils.py`, `network/ssrf.py` |
 | robots abuse | robots.txt enforced; not configurable-off in OSS | `engine/robots.py` |
 | WebRTC IP leak | Chromium `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` | `engine/browser_pool.py` |
