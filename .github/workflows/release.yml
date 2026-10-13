@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv python install ${{ env.PYTHON_VERSION }}
       - name: Build, validate, and smoke-test exact Python artifacts
         shell: bash
@@ -131,7 +131,7 @@ jobs:
           kill $server_pid 2>/dev/null || true
           [ "$health_version" = "$EXPECTED_VERSION" ] || { echo "/health reported version '$health_version', expected '$EXPECTED_VERSION'"; cat /tmp/blazecrawl-server.log; exit 1; }
           echo "/health version OK: $health_version"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-distributions
           path: |
@@ -182,7 +182,7 @@ jobs:
           mkdir /tmp/blazecrawl-npm-smoke && cd /tmp/blazecrawl-npm-smoke && npm init -y && npm install "$GITHUB_WORKSPACE/sdks/node/$(node -p "require('$GITHUB_WORKSPACE/sdks/node/pack.json')[0].filename")" "$GITHUB_WORKSPACE/mcp/node/$(node -p "require('$GITHUB_WORKSPACE/mcp/node/pack.json')[0].filename")"
           node --input-type=module -e 'import { BlazeCrawl } from "@blazecrawl/sdk"; if (typeof BlazeCrawl !== "function") process.exit(1)'
           ./node_modules/.bin/blazecrawl-mcp --help >/dev/null
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: node-distributions
           path: |
@@ -200,7 +200,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-distributions
           path: artifacts
@@ -219,7 +219,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-distributions
           path: artifacts
@@ -238,7 +238,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-distributions
           path: artifacts
@@ -261,7 +261,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: node-distributions
           path: artifacts
@@ -332,7 +332,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.4.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
