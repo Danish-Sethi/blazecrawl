@@ -10,6 +10,10 @@ updates:
   - package-ecosystem: "pip"
     directory: "/mcp/python"
     schedule: { interval: "weekly" }
+    ignore:
+      # mcp 2.x removed Server.list_tools, which mcp/python depends on.
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "npm"
     directory: "/sdks/node"
     schedule: { interval: "weekly" }
