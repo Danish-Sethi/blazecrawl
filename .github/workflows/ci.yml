@@ -26,9 +26,9 @@ jobs:
       - name: Install Chromium
         run: uv run playwright install --with-deps chromium
       - name: Ruff lint
-        run: uv run ruff check blazecrawl_core
+        run: uv run ruff check blazecrawl_core scripts/release tests/test_release_versions.py
       - name: Ruff format check
-        run: uv run ruff format --check blazecrawl_core
+        run: uv run ruff format --check blazecrawl_core scripts/release tests/test_release_versions.py
       - name: Tests
         run: uv run pytest -q
       - name: Build wheel
@@ -84,9 +84,16 @@ jobs:
         run: docker compose up --build -d
       - name: Wait for health
         run: |
+          set -euo pipefail
+          healthy=false
           for i in $(seq 1 60); do
-            curl -fsS http://localhost:8000/health && break || sleep 2
+            if curl -fsS http://localhost:8000/health; then
+              healthy=true
+              break
+            fi
+            sleep 2
           done
+          [ "$healthy" = true ] || { docker compose logs api; exit 1; }
       - name: Scrape + SSRF gate
         run: |
           # CI supplies an ephemeral key instead of reading a credential from logs.

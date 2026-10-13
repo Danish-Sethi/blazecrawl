@@ -155,4 +155,4 @@ Full license texts for all dependencies are included in the distribution:
 ## Questions or Concerns
 
 If you have questions about third-party licenses or believe there is an error in this inventory, please open an issue at:
-https://github.com/danishxsethi/blazecrawl/issues
+https://github.com/Danish-Sethi/blazecrawl/issues

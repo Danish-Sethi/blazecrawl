@@ -30,7 +30,7 @@ body:
     attributes:
       label: BlazeCrawl version
       description: Output of `blazecrawl --version` or the image tag.
-      placeholder: 0.1.2
+      placeholder: 0.2.0
     validations:
       required: true
   - type: dropdown

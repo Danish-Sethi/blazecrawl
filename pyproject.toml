@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "blazecrawl-core"
-version = "0.1.2"
+version = "0.2.0"
 description = "Security-first, self-hostable web-data engine: scrape, crawl, and map the web to clean Markdown."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,11 +36,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/danishxsethi/blazecrawl"
-Repository = "https://github.com/danishxsethi/blazecrawl"
-Issues = "https://github.com/danishxsethi/blazecrawl/issues"
-Documentation = "https://github.com/danishxsethi/blazecrawl/tree/main/docs"
-Changelog = "https://github.com/danishxsethi/blazecrawl/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/Danish-Sethi/blazecrawl"
+Repository = "https://github.com/Danish-Sethi/blazecrawl"
+Issues = "https://github.com/Danish-Sethi/blazecrawl/issues"
+Documentation = "https://github.com/Danish-Sethi/blazecrawl/tree/main/docs"
+Changelog = "https://github.com/Danish-Sethi/blazecrawl/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 redis = ["redis[hiredis]>=5.0.0"]

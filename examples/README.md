@@ -47,11 +47,11 @@ client while the crawler stays self-hosted. See
 [mcp/python](../mcp/python/README.md) and [mcp/node](../mcp/node/README.md) for
 the two server implementations and client-specific setup.
 
-> **Custom headers:** The current source checkout supports a `headers` field on
+> **Custom headers (0.2.0):** The release candidate supports a `headers` field on
 > `POST /v1/scrape` for passing custom outbound HTTP headers (User-Agent,
 > Accept-Language, Authorization, etc.). See [custom_headers.py](custom_headers.py)
 > and [custom_headers.mjs](custom_headers.mjs) for runnable examples.
-> That field is **not in the published `v0.1.2` schema**.
+> That field is **not in the v0.1.2 schema**; check [release availability](../README.md#quickstart).
 
 The custom-header examples use the external `https://httpbin.org/headers` echo
 service and **fake** website credentials only. Your `BLAZECRAWL_API_KEY` stays

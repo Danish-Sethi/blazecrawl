@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://pypi.org/project/blazecrawl-core/"><img src="https://img.shields.io/pypi/v/blazecrawl-core?style=flat-square&amp;label=PyPI&amp;color=ffad52" alt="PyPI version" /></a>
   <a href="https://www.npmjs.com/package/@blazecrawl/sdk"><img src="https://img.shields.io/npm/v/@blazecrawl/sdk?style=flat-square&amp;label=npm&amp;color=ffad52" alt="Node SDK version" /></a>
-  <a href="https://github.com/danishxsethi/blazecrawl/actions/workflows/ci.yml"><img src="https://github.com/danishxsethi/blazecrawl/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main" /></a>
+  <a href="https://github.com/Danish-Sethi/blazecrawl/actions/workflows/ci.yml"><img src="https://github.com/Danish-Sethi/blazecrawl/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main" /></a>
   <a href="https://pypi.org/project/blazecrawl-core/"><img src="https://img.shields.io/badge/Python-3.11%2B-9baebe?style=flat-square" alt="Requires Python 3.11 or newer" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-9baebe?style=flat-square" alt="Apache-2.0 license" /></a>
 </p>
@@ -57,9 +57,17 @@ Core does not bundle an LLM, a managed proxy fleet, or a promise to bypass every
 
 ## Quickstart
 
-**Prerequisite:** Docker running Linux containers. The published `v0.1.2` image targets **Linux x86_64**;
-other architectures may need emulation or a source build. Shell examples below use Bash; a PowerShell
-version follows. Prefer Python? Use the [no-Docker option](#local-no-docker).
+**Release candidate: v0.2.0.** This page describes the intended release, not a claim that it is
+already published. Use the pinned commands below only after [the release](https://github.com/Danish-Sethi/blazecrawl/releases)
+confirms all five packages and the image passed public-registry checks. Until then, use
+[source setup](CONTRIBUTING.md#setup). v0.1.2 does not include the new 0.2.0 fields/features.
+
+**Recommended path:** Docker running Linux containers, with a working internet connection.
+The image supports **Linux x86_64 (amd64)**. On Apple Silicon, add `--platform linux/amd64`
+to `docker run` to use Docker Desktop emulation (slower; **not native ARM64 support**).
+Bash examples use curl 7.71+ on Linux/macOS for bounded startup retries; the PowerShell
+equivalent follows. No cloud account is needed.
+Prefer Python? Use the [no-Docker option](#local-no-docker).
 
 ### 1. Start the API
 
@@ -67,7 +75,7 @@ version follows. Prefer Python? Use the [no-Docker option](#local-no-docker).
 docker run -d --name blazecrawl \
   -p 127.0.0.1:8000:8000 \
   -v blazecrawl-data:/data/blazecrawl \
-  ghcr.io/danishxsethi/blazecrawl:0.1.2
+  ghcr.io/danish-sethi/blazecrawl:0.2.0
 ```
 
 The API is published to loopback only. The volume keeps your generated key across container restarts.
@@ -88,25 +96,43 @@ If you reuse an existing volume, use your previously saved key instead.
 export BLAZECRAWL_API_URL="http://127.0.0.1:8000"
 export BLAZECRAWL_API_KEY="blz_local_REPLACE_WITH_YOUR_KEY"
 
-curl -fsS "$BLAZECRAWL_API_URL/ready"
+# Wait for startup; connection refused means the server is not ready yet.
+curl --retry 30 --retry-all-errors --retry-delay 1 --retry-max-time 90 --max-time 5 \
+  -fsS "$BLAZECRAWL_API_URL/ready"
 
 curl -fsS "$BLAZECRAWL_API_URL/v1/scrape" \
   -H "Authorization: Bearer $BLAZECRAWL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com","formats":["markdown"],"render":"static"}'
+  -d '{"url":"https://example.com","formats":["markdown"],"render":"static","only_main_content":false}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["markdown"])'
 ```
 
-The JSON response contains `success` and `data`; your extracted Markdown is at **`data.markdown`**.
+The final line uses Python 3 to display **`data.markdown`**, including `Example Domain`.
+Without Python, remove the pipe to see the JSON response, which contains `success` and `data`.
 The SDKs unwrap `data` for you. Check `browser.is_healthy` in `/ready` before using browser rendering;
 static extraction can still work when the browser pool is unavailable.
 
 Open **[interactive API docs](http://127.0.0.1:8000/docs)** on your running instance to explore the contract.
 
+### If the first request fails
+
+| Symptom | Action |
+|---|---|
+| Container cannot bind port 8000 | Use `-p 127.0.0.1:8001:8000` and set the client URL to `http://127.0.0.1:8001`. If the name is already in use, inspect `docker ps -a` and start the existing container or choose another name. |
+| Connection refused / startup still running | Check `docker ps -a` and `docker logs blazecrawl`; retry `/ready` after startup. `/health` reports liveness/version, not working Chromium. |
+| HTTP 401 / no new key printed | An old volume reuses its saved key; use the same key, not a new placeholder. Recover your own persisted key locally with `docker exec blazecrawl cat /data/blazecrawl/api_key`; do not paste it into an issue. Do not delete the volume to troubleshoot. |
+| HTTP 400 `url_rejected` for a private URL | Expected SSRF protection. Use a public HTTP(S) page. Loopback, LAN, metadata and private DNS answers are intentionally rejected; do not disable the checks. |
+| Browser unhealthy / Chromium missing | Static extraction may still work. For native installs run `playwright install chromium` in the **server's** environment; on Linux use `--with-deps`. For Docker use the pinned official image and inspect startup logs. |
+| SDK installed but no server responds | SDKs and MCP are clients, not the extraction server. Start the API, then set the same API URL and key in the client terminal. |
+| Image/package version not found | 0.2.0 may still be a candidate, or the new org image may not yet be public. Check the release status; do not substitute an unverified `latest` tag. |
+
+Keep the key private; redact keys and proxy credentials from shared logs. Authentication stays enabled.
+
 <details>
 <summary><strong>PowerShell quickstart</strong></summary>
 
 ```powershell
-docker run -d --name blazecrawl -p 127.0.0.1:8000:8000 -v blazecrawl-data:/data/blazecrawl ghcr.io/danishxsethi/blazecrawl:0.1.2
+docker run -d --name blazecrawl -p 127.0.0.1:8000:8000 -v blazecrawl-data:/data/blazecrawl ghcr.io/danish-sethi/blazecrawl:0.2.0
 docker logs -f blazecrawl
 ```
 
@@ -115,32 +141,31 @@ Copy the first-run key and press Ctrl+C, then:
 ```powershell
 $env:BLAZECRAWL_API_URL = "http://127.0.0.1:8000"
 $env:BLAZECRAWL_API_KEY = "blz_local_REPLACE_WITH_YOUR_KEY"
-Invoke-RestMethod "$env:BLAZECRAWL_API_URL/ready"
+$ready = $null
+for ($i = 0; $i -lt 30; $i++) {
+    try {
+        $ready = Invoke-RestMethod "$env:BLAZECRAWL_API_URL/ready" -TimeoutSec 5
+        break
+    } catch [System.Net.WebException] {
+        Start-Sleep -Seconds 2
+    } catch [System.Net.Http.HttpRequestException] {
+        Start-Sleep -Seconds 2
+    }
+}
+if ($null -eq $ready) { throw "API not ready; inspect docker logs blazecrawl." }
+$ready
 
 $headers = @{ Authorization = "Bearer $env:BLAZECRAWL_API_KEY" }
-$body = @{ url = "https://example.com"; formats = @("markdown"); render = "static" } | ConvertTo-Json
+$body = @{ url = "https://example.com"; formats = @("markdown"); render = "static"; only_main_content = $false } | ConvertTo-Json
 $result = Invoke-RestMethod -Uri "$env:BLAZECRAWL_API_URL/v1/scrape" -Method Post -Headers $headers -ContentType "application/json" -Body $body
 $result.data.markdown
 ```
 
 </details>
 
-<details>
-<summary><strong>Build from source with Docker Compose</strong></summary>
-
-```bash
-git clone https://github.com/danishxsethi/blazecrawl.git
-cd blazecrawl
-docker compose up --build -d
-docker compose logs -f api
-```
-
-Copy the first-run key, stop following logs, and use the same requests above.
-Compose also includes an optional Redis service for caching and crawl job checkpoints. Crawl jobs are
-checkpointed to Redis when it is reachable, so unfinished crawls resume after a restart. Without Redis they stay
-in process and are lost on restart unless `CRAWL_CHECKPOINTS_ENABLED=true` writes checkpoints to the API volume.
-
-</details>
+For a source build/Compose and optional Redis, see [contributor setup](CONTRIBUTING.md#setup).
+Without Redis, crawl state is lost on restart unless `CRAWL_CHECKPOINTS_ENABLED=true` writes
+checkpoints to the API state volume. The generated API key persists independently of crawl settings.
 
 **Deployment note:** set `BLAZECRAWL_API_KEY` yourself to use a key that is never printed or persisted.
 Keep authentication enabled. Publishing beyond loopback requires deliberate access controls and TLS.
@@ -148,19 +173,26 @@ See the [security model](docs/SECURITY_MODEL.md) before exposing the API.
 
 ### Local (no Docker)
 
-Requires **Python 3.11+**. On native Windows, set an explicit `BLAZECRAWL_API_KEY` before starting
+Requires **Python 3.11+**. On Linux/macOS:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install blazecrawl-core==0.2.0
+playwright install chromium
+blazecrawl-server
+```
+
+On native Windows, set an explicit `BLAZECRAWL_API_KEY` before starting
 the server; generated-key storage expects POSIX file permissions. Use the same securely generated
 value in both server and client terminals:
 
 ```powershell
-$env:BLAZECRAWL_API_KEY = "blz_local_REPLACE_WITH_A_RANDOM_SECRET"
-```
-
-Install into a virtual environment:
-
-```bash
-pip install blazecrawl-core==0.1.2
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install blazecrawl-core==0.2.0
 playwright install chromium
+$env:BLAZECRAWL_API_KEY = python -c "import secrets; print('blz_local_' + secrets.token_urlsafe(32))"
 blazecrawl-server
 ```
 
@@ -220,11 +252,11 @@ Keep `BLAZECRAWL_API_URL` and `BLAZECRAWL_API_KEY` from the quickstart in your e
 
 | Surface | Install | Detailed guide |
 |---|---|---|
-| Server + CLI | `pip install blazecrawl-core==0.1.2` | [Quickstart](#quickstart) |
-| Python SDK | `pip install blazecrawl==0.1.2` | [Python SDK](sdks/python/README.md) |
-| Node.js SDK, Node 18+ | `npm install @blazecrawl/sdk@0.1.2` | [Node SDK](sdks/node/README.md) |
-| Python MCP server | `pip install blazecrawl-mcp==0.1.2` | [Python MCP](mcp/python/README.md) |
-| Node.js MCP server, Node 18+ | `npm install @blazecrawl/mcp@0.1.2` | [Node MCP](mcp/node/README.md) |
+| Server + CLI | `pip install blazecrawl-core==0.2.0` | [Quickstart](#quickstart) |
+| Python SDK | `pip install blazecrawl==0.2.0` | [Python SDK](sdks/python/README.md) |
+| Node.js SDK, Node 18+ | `npm install @blazecrawl/sdk@0.2.0` | [Node SDK](sdks/node/README.md) |
+| Python MCP server | `pip install blazecrawl-mcp==0.2.0` | [Python MCP](mcp/python/README.md) |
+| Node.js MCP server, Node 18+ | `npm install @blazecrawl/mcp@0.2.0` | [Node MCP](mcp/node/README.md) |
 
 ### Python
 
@@ -259,9 +291,8 @@ blazecrawl health
 
 Add `--json` for the full response. See [runnable examples](examples/README.md) for more.
 
-**Source-checkout extras:** `scrape --output page.md`, `scrape --formats screenshot --output page.png`
-(add `--full-page` for the whole page), and `doctor` are available in the current repository, **not the
-published `v0.1.2` CLI**. Follow [source setup](CONTRIBUTING.md#setup) to use them.
+**New in 0.2.0:** `scrape --output page.md`, `scrape --formats screenshot --output page.png`
+(add `--full-page` for the whole page), and `doctor`. These are not in the v0.1.2 CLI.
 `--output` writes UTF-8 and overwrites an existing file; its parent directory must exist.
 With `--formats screenshot`, `--output` writes the PNG bytes, and `--json` returns the full response with the base64 screenshot.
 `doctor` checks Chromium and, when configured, server/key access.
@@ -305,7 +336,7 @@ Prefer Node.js? See the [equivalent `npx` configuration](mcp/node/README.md).
 |---|---|
 | `GET /health` | Liveness, version, and runtime mode. |
 | `GET /ready` | Browser-pool, cache, and queue status. |
-| `GET /metrics` | Opt-in Prometheus browser-pool metrics (source checkout; disabled by default). |
+| `GET /metrics` | Opt-in Prometheus browser-pool metrics (0.2.0; disabled by default). |
 | `POST /v1/scrape` | One page to Markdown, HTML, text, links, images, or a PNG screenshot. |
 | `POST /v1/map` | Discover URLs from sitemaps and the link graph. |
 | `POST /v1/crawl` | Start an asynchronous, same-origin crawl. |
@@ -314,13 +345,13 @@ Prefer Node.js? See the [equivalent `npx` configuration](mcp/node/README.md).
 
 All `/v1/` endpoints require your bearer key by default. Scrape `render` accepts `static`, `browser`,
 or `auto` (static first, browser fallback for thin content). See [table conversion limits](docs/MARKDOWN_TABLES.md)
-when working with tabular pages. The current source checkout also supports `user_agent` per scrape
-or crawl; it selects robots.txt rules for crawls. The source checkout also supports a `headers`
+when working with tabular pages. Version 0.2.0 supports `user_agent` per scrape
+or crawl; it selects robots.txt rules for crawls. Version 0.2.0 also supports a `headers`
 field on scrape for custom outbound HTTP headers (User-Agent, Accept-Language, Authorization, etc.).
-Both fields are **not in the published `v0.1.2` schema**.
+Both fields are **not in the v0.1.2 schema**.
 Your running instance's `/docs` is the authoritative version-specific contract.
 
-**Screenshots (source checkout, not in the published `v0.1.2` schema):** `"formats": ["screenshot"]` returns
+**Screenshots (0.2.0, not in the v0.1.2 schema):** `"formats": ["screenshot"]` returns
 a base64-encoded PNG at `data.screenshot`. Screenshots always render in the browser, so `render` must be
 `auto` or `browser`; `render: "static"` is rejected with HTTP `422`. Set `"full_page": true` to capture the
 whole scrollable page instead of the viewport (default `false`). A capture larger than `SCREENSHOT_MAX_BYTES`
@@ -342,20 +373,19 @@ Cache keys ignore header ordering and name casing, isolate different values, and
 keys when no custom headers are supplied. See the [custom-header examples](examples/README.md)
 for fake-credential demonstrations; never send real secrets to public echo services.
 
-### Optional pool metrics (source checkout)
+### Optional pool metrics (0.2.0)
 
 Install the `[metrics]` extra and set `METRICS_ENABLED=true` **before starting the server**:
 
 ```bash
-pip install -e ".[metrics]"
+pip install "blazecrawl-core[metrics]==0.2.0"
 METRICS_ENABLED=true blazecrawl-server
 curl -fsS http://127.0.0.1:8000/metrics
 ```
 
 With uv, use `uv sync --extra metrics` and `METRICS_ENABLED=true uv run --extra metrics blazecrawl-server`.
 In PowerShell, set `$env:METRICS_ENABLED = "true"` before launching the server.
-For a release containing this feature, the install extra is `blazecrawl-core[metrics]`;
-it is **not available in published v0.1.2**. An enabled exporter without the extra fails explicitly
+The extra is **not available in v0.1.2**. An enabled exporter without the extra fails explicitly
 with installation instructions. With `METRICS_ENABLED=false` (the default), the optional
 dependency is not imported and `/metrics` returns 404.
 
@@ -404,7 +434,7 @@ Poll until `status` is `completed`, `failed`, or `cancelled`; inspect `pages_fai
 
 ## Security model
 
-### Optional upstream proxy (source checkout)
+### Optional upstream proxy (0.2.0)
 
 Set `EGRESS_UPSTREAM_PROXY=https://proxy.example:8443` to route both static
 fetches and browser traffic through an HTTP(S) CONNECT proxy; unset it for the
@@ -415,7 +445,7 @@ Paths other than `/`, queries, fragments, malformed credentials/ports, and SOCKS
 are rejected without printing credentials. The upstream must support numeric
 CONNECT for both HTTP and HTTPS destinations. Targets and redirects remain
 SSRF-validated and IP-pinned, with original Host and TLS verification intact.
-This setting is not in the published `v0.1.2` release.
+This setting is not in the v0.1.2 release.
 See [the upstream security contract](docs/SECURITY_MODEL.md#optional-upstream-proxy).
 
 **User-supplied URLs are untrusted input.** Static HTTP validates destinations and pins connections
@@ -474,9 +504,9 @@ re-fetching completed pages. There is no distributed crawl queue in this release
 You do not need to start with networking internals: a reproducible bug report, a tricky extraction
 fixture, a useful example, or a clearer explanation can make a meaningful contribution.
 
-**[Find a good first issue](https://github.com/danishxsethi/blazecrawl/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22)** ·
-**[Browse help wanted](https://github.com/danishxsethi/blazecrawl/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22)** ·
-**[Propose an improvement](https://github.com/danishxsethi/blazecrawl/issues/new/choose)**
+**[Find a good first issue](https://github.com/Danish-Sethi/blazecrawl/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22)** ·
+**[Browse help wanted](https://github.com/Danish-Sethi/blazecrawl/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22)** ·
+**[Propose an improvement](https://github.com/Danish-Sethi/blazecrawl/issues/new/choose)**
 
 1. Choose an open issue or discuss a focused change before building something substantial.
 2. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, and the first-PR workflow.
@@ -486,12 +516,12 @@ The [contribution backlog](docs/CONTRIBUTION_BACKLOG.md) offers ideas and contex
 already complete, so check the live tracker before claiming one. All user-controlled network access
 must stay within the existing egress controls, including the browser proxy.
 
-Built with help from [our contributors](https://github.com/danishxsethi/blazecrawl/graphs/contributors).
+Built with help from [our contributors](https://github.com/Danish-Sethi/blazecrawl/graphs/contributors).
 Participation follows the [Code of Conduct](CODE_OF_CONDUCT.md); project roles are described in [Governance](GOVERNANCE.md).
 
 ## Project status and support
 
-**v0.1.x: an early release, not a large-scale production guarantee.** The core surfaces are implemented;
+**v0.2.0 candidate: an early release, not a large-scale production guarantee.** The core surfaces are implemented;
 real-world feedback, compatibility reports, and regression tests are especially useful.
 
 Core is the open-source engine, not a hosted SaaS. Managed anti-bot/proxy services, managed LLM execution,
@@ -501,9 +531,9 @@ See [OSS vs. Cloud](docs/OSS_VS_CLOUD.md). Performance figures are limited to th
 
 | Need | Go here |
 |---|---|
-| Bug report or feature request | [Issue templates](https://github.com/danishxsethi/blazecrawl/issues/new/choose) |
+| Bug report or feature request | [Issue templates](https://github.com/Danish-Sethi/blazecrawl/issues/new/choose) |
 | Setup question | [Support guide](SUPPORT.md) and a focused GitHub issue |
-| Release notes | [Releases](https://github.com/danishxsethi/blazecrawl/releases) · [Changelog](CHANGELOG.md) |
+| Release notes | [Releases](https://github.com/Danish-Sethi/blazecrawl/releases) · [Changelog](CHANGELOG.md) |
 | Planned work | [Roadmap](docs/ROADMAP.md) |
 | Security disclosure | [Security policy](SECURITY.md) |
 

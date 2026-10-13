@@ -4,14 +4,40 @@ Thanks for your interest. This guide gets you from clone to a mergeable PR.
 
 ## Setup
 
+Use Python 3.12 and [uv](https://docs.astral.sh/uv/) to match Ubuntu 24.04 CI
+(core supports Python 3.11+). Linux/macOS:
+
 ```bash
-git clone <repo> && cd blazecrawl
-python -m venv .venv && source .venv/bin/activate   # Python 3.11+
-pip install -e ".[dev]"
-playwright install chromium
+git clone https://github.com/Danish-Sethi/blazecrawl.git
+cd blazecrawl
+uv python install 3.12
+uv sync --python 3.12 --extra dev --extra metrics
+uv run playwright install chromium
 ```
 
+On Linux CI, `uv run playwright install --with-deps chromium` also supplies the OS
+libraries; use it if your Linux browser cannot launch. Native Windows PowerShell:
+
+```powershell
+git clone https://github.com/Danish-Sethi/blazecrawl.git
+Set-Location blazecrawl
+uv python install 3.12
+uv sync --python 3.12 --extra dev --extra metrics
+uv run playwright install chromium
+$env:BLAZECRAWL_API_KEY = uv run python -c "import secrets; print('blz_local_' + secrets.token_urlsafe(32))"
+uv run blazecrawl-server
+```
+
+Native Windows needs an explicit random API key (POSIX key-file bootstrap is not
+supported). Save it privately and use the same value in your client terminal.
+On Linux/macOS, run `uv run blazecrawl-server` and copy the first-run key.
+See the [authenticated requests and troubleshooting](README.md#quickstart).
+
+For a source container with optional Redis: `docker compose up --build -d`, then
+`docker compose logs -f api` for the first-run key. Compose binds only to loopback.
+
 Node surfaces (SDK + MCP) need Node 18+ and have **no** runtime dependencies.
+CI exercises Node 20; release/trusted-publishing CI uses Node 24 and npm >=11.5.1.
 
 ## Architecture map
 
@@ -32,13 +58,22 @@ The rule that matters most: **every fetch of a user-controlled URL goes through
 ## Running tests
 
 ```bash
-pytest                      # full Python suite
-ruff check blazecrawl_core  # lint
-ruff format --check .       # format
-cd sdks/node && npm test    # Node SDK
+uv run pytest -q
+uv run ruff check blazecrawl_core scripts/release tests/test_release_versions.py
+uv run ruff format --check blazecrawl_core scripts/release tests/test_release_versions.py
+uv build
+npm --prefix sdks/node test
+node --test mcp/node/test/*.test.mjs
+uv run --directory sdks/python --extra dev pytest tests -q
+uv run --directory mcp/python --with pytest pytest tests -q
 ```
 
 Tests must pass and lint must be clean before a PR is merged.
+The Linux read-only release candidate job additionally builds/installs all five
+distributions and tests the image. See [release preflight](docs/RELEASING.md).
+On Windows with Node 20, shells do not expand test globs; use
+`node --test sdks\node\test\sdk.test.mjs mcp\node\test\schema.test.mjs` for the two
+Node suites instead of the glob-based npm command.
 
 ## Style
 

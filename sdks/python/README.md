@@ -5,10 +5,11 @@ Python API client for a running BlazeCrawl Core server.
 ## Install
 
 ```bash
-pip install blazecrawl==0.1.2
+pip install blazecrawl==0.2.0
 ```
 
-The server is separate. Run `blazecrawl-core` locally or point the client at a
+These are v0.2.0 candidate instructions; check the [release status](../../README.md#quickstart)
+before installing. The server is separate. Run `blazecrawl-core` locally or point the client at a
 self-hosted instance with `base_url`.
 
 ## Authenticate and scrape
@@ -27,8 +28,9 @@ except BlazeCrawlError as exc:
     print(f"BlazeCrawl request failed: {exc}")
 ```
 
-`map()` discovers site URLs. `crawl()` starts a crawl and returns its job
-reference; poll that job through the client API until it completes.
+`map()` discovers site URLs. `crawl()` polls to a terminal state by default;
+pass `wait=False` to get a job reference and use `crawl_status(job_id)` yourself.
+Check `status` and `pages_failed`, not only whether the call returned.
 
 
 ### Retry transient responses

@@ -1,16 +1,24 @@
 {
   "name": "@blazecrawl/mcp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "MCP server for BlazeCrawl Core (scrape/map/crawl tools).",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "model-context-protocol", "web-scraping", "crawler", "llm", "ai-agents", "self-hosted"],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "web-scraping",
+    "crawler",
+    "llm",
+    "ai-agents",
+    "self-hosted"
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danishxsethi/blazecrawl.git"
+    "url": "git+https://github.com/Danish-Sethi/blazecrawl.git"
   },
-  "homepage": "https://github.com/danishxsethi/blazecrawl#readme",
+  "homepage": "https://github.com/Danish-Sethi/blazecrawl#readme",
   "bugs": {
-    "url": "https://github.com/danishxsethi/blazecrawl/issues"
+    "url": "https://github.com/Danish-Sethi/blazecrawl/issues"
   },
   "publishConfig": {
     "access": "public",
@@ -18,7 +26,13 @@
   },
   "type": "module",
   "main": "./src/index.js",
-  "bin": { "blazecrawl-mcp": "./src/index.js" },
-  "engines": { "node": ">=18" },
-  "files": ["src"]
+  "bin": {
+    "blazecrawl-mcp": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src"
+  ]
 }
