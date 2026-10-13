@@ -600,6 +600,83 @@ async def test_origin_host_port_is_scheme_aware_through_connect(
     assert net.connects[0].startswith(f"CONNECT {ORIGIN_IP}:{port} ".encode())
 
 
+@pytest.mark.parametrize("same_origin", [False, True])
+async def test_real_upstream_static_redirect_preserves_custom_header_scope(network, same_origin):
+    net = network
+    host = "origin.test" if same_origin else "other.test"
+    net.location = f"http://{host}:{net.http_port}/"
+    response = await PinnedProxyClient(net.proxy_url, user_agent="Baseline/1.0").get(
+        f"http://origin.test:{net.http_port}/redirect",
+        headers={
+            "Authorization": "Bearer fixture-only",
+            "Cookie": "fixture=only",
+            "X-Custom-Token": "fixture-token",
+            "User-Agent": "Custom/1.0",
+        },
+    )
+    assert response.status_code == 200 and len(net.origins) == 2
+    for name, value in (
+        (b"authorization", b"Bearer fixture-only"),
+        (b"cookie", b"fixture=only"),
+        (b"x-custom-token", b"fixture-token"),
+    ):
+        assert name + b": " + value in net.origins[0]
+        assert (name + b": " + value in net.origins[1]) == same_origin
+    expected_agent = b"Custom/1.0" if same_origin else b"Baseline/1.0"
+    assert b"user-agent: " + expected_agent in net.origins[1]
+
+
+@pytest.mark.parametrize("redirect", [False, True])
+async def test_real_browser_upstream_cdp_header_scope_and_screenshot(network, redirect):
+    from playwright.async_api import async_playwright
+
+    net = network
+    net.location = f"http://other.test:{net.http_port}/"
+    proxy = BrowserEgressProxy(upstream_proxy_url=net.proxy_url)
+    proxy_url = await proxy.start()
+    url = f"http://origin.test:{net.http_port}" + ("/redirect" if redirect else "/")
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(
+                headless=True,
+                proxy={"server": proxy_url, "bypass": ""},
+            )
+            try:
+                page = await browser.new_page()
+                await page.route("**/favicon.ico", lambda route: route.abort())
+                await page.set_extra_http_headers({"User-Agent": "Baseline/1.0"})
+                await egress.install_browser_ssrf_guard(
+                    page,
+                    initial_url=url,
+                    user_agent="Baseline/1.0",
+                    headers={
+                        "Authorization": "Bearer browser-fixture",
+                        "X-Custom-Token": "fixture-token",
+                        "User-Agent": "Custom/1.0",
+                    },
+                )
+                response = await page.goto(url)
+                assert response is not None and response.status == 200
+                png = await browser_pool.take_screenshot(page, full_page=True, max_bytes=512 * 1024)
+                assert png.startswith(b"\x89PNG\r\n\x1a\n")
+            finally:
+                await browser.close()
+        first = net.origins[0].lower()
+        assert b"authorization: bearer browser-fixture\r\n" in first
+        assert b"x-custom-token: fixture-token\r\n" in first
+        if redirect:
+            assert len(net.origins) == 2
+            second = net.origins[1].lower()
+            assert b"authorization:" not in second
+            assert b"x-custom-token:" not in second
+            assert b"user-agent: baseline/1.0\r\n" in second
+        assert all(
+            h.startswith(f"CONNECT {ORIGIN_IP}:{net.http_port} ".encode()) for h in net.connects
+        )
+    finally:
+        await proxy.close()
+
+
 async def test_browser_pool_keeps_local_proxy_with_configured_upstream(network, monkeypatch):
     net = network
     monkeypatch.setattr(settings, "EGRESS_UPSTREAM_PROXY", net.proxy_url)
