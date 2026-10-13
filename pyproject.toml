@@ -45,6 +45,7 @@ Changelog = "https://github.com/danishxsethi/blazecrawl/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 redis = ["redis[hiredis]>=5.0.0"]
 structured = ["extruct>=0.16.0"]
+metrics = ["prometheus-client>=0.21.0"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
