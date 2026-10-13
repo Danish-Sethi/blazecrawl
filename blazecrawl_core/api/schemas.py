@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from blazecrawl_core.engine.robots import DEFAULT_USER_AGENT
 
@@ -15,7 +15,14 @@ class ScrapeRequest(BaseModel):
     url: HttpUrl
     formats: list[str] | None = Field(
         default=None,
-        description="Subset of markdown, html, text, links, images. Default ['markdown'].",
+        description=(
+            "Subset of markdown, html, text, links, images, screenshot. Default ['markdown']. "
+            "'screenshot' returns a base64 PNG in data.screenshot and requires browser rendering."
+        ),
+    )
+    full_page: bool = Field(
+        default=False,
+        description="For formats including 'screenshot': capture the full scrollable page instead of the viewport.",
     )
     only_main_content: bool = True
     timeout_ms: int | None = Field(default=None, ge=1000, le=120000)
@@ -29,6 +36,14 @@ class ScrapeRequest(BaseModel):
         if v.scheme not in ("http", "https"):
             raise ValueError("Only http and https URLs are allowed")
         return v
+
+    @model_validator(mode="after")
+    def _screenshot_needs_browser(self) -> ScrapeRequest:
+        if self.render == "static" and "screenshot" in (self.formats or []):
+            raise ValueError(
+                "formats 'screenshot' requires browser rendering; use render auto or browser"
+            )
+        return self
 
 
 class ScrapeResponse(BaseModel):

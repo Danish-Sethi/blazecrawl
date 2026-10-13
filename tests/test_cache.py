@@ -83,3 +83,13 @@ async def test_redis_passes_ttl_and_uses_decoded_responses(monkeypatch):
     assert await backend.get("key") == '{"value": 1}'
     client.set.assert_awaited_once_with("key", '{"value": 1}', ex=7)
     assert factory_calls == [("redis://localhost:6379/0", {"decode_responses": True})]
+
+
+def test_make_key_varies_full_page_only_for_screenshot_requests():
+    shot_viewport = cache.make_key(URL, ["screenshot"], True, "auto", "ua", full_page=False)
+    shot_full = cache.make_key(URL, ["screenshot"], True, "auto", "ua", full_page=True)
+    assert shot_viewport != shot_full
+
+    md_viewport = cache.make_key(URL, ["markdown"], True, "auto", "ua", full_page=False)
+    md_full = cache.make_key(URL, ["markdown"], True, "auto", "ua", full_page=True)
+    assert md_viewport == md_full
