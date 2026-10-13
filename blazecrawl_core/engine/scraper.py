@@ -14,6 +14,8 @@ from __future__ import annotations
 import base64
 import contextlib
 import time
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 
 from blazecrawl_core.config import settings
@@ -23,6 +25,7 @@ from blazecrawl_core.engine.content_extractor import (
     ExtractOptions,
     get_content_extractor,
 )
+from blazecrawl_core.engine.governor import CrawlFetchDenied
 from blazecrawl_core.exceptions import ScreenshotTooLargeError
 from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.egress import install_browser_ssrf_guard, safe_fetch
@@ -49,6 +52,7 @@ class ScrapeResult:
     render: str  # "static" | "browser"
     duration_ms: float
     screenshot: str | None = None  # base64-encoded PNG
+    retry_after: str | None = None  # Internal scheduling metadata, not part of the API response.
 
     def to_dict(self) -> dict:
         return {
@@ -86,6 +90,8 @@ def _to_result(
     t0: float,
     final_url: str,
     screenshot: bytes | None = None,
+    *,
+    retry_after: str | None = None,
 ) -> ScrapeResult:
     return ScrapeResult(
         url=url,
@@ -109,13 +115,14 @@ def _to_result(
         },
         render=render,
         duration_ms=(time.perf_counter() - t0) * 1000,
+        retry_after=retry_after,
         screenshot=base64.b64encode(screenshot).decode("ascii") if screenshot else None,
     )
 
 
 async def _fetch_static(
     url: str, timeout_ms: int, user_agent: str, headers: dict[str, str] | None = None
-) -> tuple[int, str, str]:
+) -> tuple[int, str, str, str | None]:
     resp = await safe_fetch(
         url,
         timeout_s=timeout_ms / 1000,
@@ -124,7 +131,7 @@ async def _fetch_static(
         user_agent=user_agent,
         headers=headers,
     )
-    return resp.status_code, resp.text, resp.final_url
+    return resp.status_code, resp.text, resp.final_url, resp.headers.get("retry-after")
 
 
 async def _fetch_browser(
@@ -135,7 +142,7 @@ async def _fetch_browser(
     *,
     screenshot: bool = False,
     full_page: bool = False,
-) -> tuple[int, str, str, bytes | None]:
+) -> tuple[int, str, str, bytes | None, str | None]:
     headers = validate_headers(headers)
     validate_user_agent(user_agent)
     pool = get_browser_pool()
@@ -158,7 +165,8 @@ async def _fetch_browser(
             )
         status = response.status if response else 200
         final_url = page.url
-        return status, html, final_url, png
+        retry_after = await response.header_value("retry-after") if response else None
+        return status, html, final_url, png, retry_after
     finally:
         await pool.release(context)
 
@@ -173,6 +181,7 @@ async def scrape(
     user_agent: str = "BlazeCrawl/0.1.0",
     full_page: bool = False,
     headers: dict[str, str] | None = None,
+    fetch_context: Callable[[], AbstractAsyncContextManager[None]] | None = None,
 ) -> ScrapeResult:
     """Scrape a URL to clean Markdown/HTML/text, egress-guarded.
 
@@ -188,6 +197,7 @@ async def scrape(
         full_page: Capture the full scrollable page for "screenshot" (default: viewport).
         headers: Bounded custom HTTP headers, scoped to the initial origin.
             A case-insensitive User-Agent overrides user_agent on that origin.
+        fetch_context: Internal crawler admission hook, once per static/browser page attempt.
     """
     t0 = time.perf_counter()
     headers = validate_headers(headers)
@@ -195,6 +205,23 @@ async def scrape(
     timeout_ms = timeout_ms or settings.DEFAULT_TIMEOUT_MS
     extractor = get_content_extractor()
     opts = _options_from(formats, only_main_content)
+
+    async def fetch(browser: bool = False) -> tuple[int, str, str, bytes | None, str | None]:
+        context = fetch_context() if fetch_context else contextlib.nullcontext()
+        async with context:
+            if browser:
+                return await _fetch_browser(
+                    url,
+                    timeout_ms,
+                    user_agent,
+                    headers,
+                    screenshot=want_screenshot,
+                    full_page=full_page,
+                )
+            status, html, final_url, retry_after = await _fetch_static(
+                url, timeout_ms, user_agent, headers
+            )
+            return status, html, final_url, None, retry_after
 
     if render not in ("auto", "static", "browser"):
         raise ValueError("render must be one of auto|static|browser")
@@ -207,24 +234,22 @@ async def scrape(
     # Browser-only path. Screenshots always need a rendered page, so they go
     # straight to the browser even when render is "auto".
     if render == "browser" or want_screenshot:
-        status, html, final_url, png = await _fetch_browser(
-            url, timeout_ms, user_agent, headers, screenshot=want_screenshot, full_page=full_page
-        )
+        status, html, final_url, png, retry_after = await fetch(browser=True)
         ext = await extractor.extract(html, final_url, opts)
-        return _to_result(url, status, ext, "browser", t0, final_url, png)
+        return _to_result(url, status, ext, "browser", t0, final_url, png, retry_after=retry_after)
 
     # Static path (with auto fallback to browser).
     try:
-        status, html, final_url = await _fetch_static(url, timeout_ms, user_agent, headers)
-    except SSRFValidationError:
+        status, html, final_url, _, retry_after = await fetch()
+    except (SSRFValidationError, CrawlFetchDenied):
         raise
     except Exception as e:
         if render == "static":
             raise
         logger.info("Static fetch failed, falling back to browser", url=url, error=str(e))
-        status, html, final_url, _ = await _fetch_browser(url, timeout_ms, user_agent, headers)
+        status, html, final_url, _, retry_after = await fetch(browser=True)
         ext = await extractor.extract(html, final_url, opts)
-        return _to_result(url, status, ext, "browser", t0, final_url)
+        return _to_result(url, status, ext, "browser", t0, final_url, retry_after=retry_after)
 
     ext = await extractor.extract(html, final_url, opts)
 
@@ -234,15 +259,19 @@ async def scrape(
         if words < _MIN_STATIC_WORDS and status == 200:
             logger.info("Static content thin; retrying with browser", url=url, words=words)
             try:
-                bstatus, bhtml, bfinal, _ = await _fetch_browser(
-                    url, timeout_ms, user_agent, headers
-                )
+                bstatus, bhtml, bfinal, _, bretry_after = await fetch(browser=True)
+                if fetch_context and (bstatus == 429 or 500 <= bstatus <= 599):
+                    return _to_result(
+                        url, bstatus, ext, "browser", t0, bfinal, retry_after=bretry_after
+                    )
                 bext = await extractor.extract(bhtml, bfinal, opts)
                 if len((bext.markdown or "").split()) > words:
-                    return _to_result(url, bstatus, bext, "browser", t0, bfinal)
-            except ScreenshotTooLargeError:
+                    return _to_result(
+                        url, bstatus, bext, "browser", t0, bfinal, retry_after=bretry_after
+                    )
+            except (SSRFValidationError, CrawlFetchDenied, ScreenshotTooLargeError):
                 raise
             except Exception as e:
                 logger.warning("Browser fallback failed; using static result", error=str(e))
 
-    return _to_result(url, status, ext, "static", t0, final_url)
+    return _to_result(url, status, ext, "static", t0, final_url, retry_after=retry_after)

@@ -327,7 +327,7 @@ async def test_static_scraper_forwards_validated_headers(outbound):
 async def test_auto_fallback_keeps_header_policy(monkeypatch):
     html = "<html><body><article><p>Header demo</p></article></body></html>"
     static = AsyncMock(side_effect=OSError("fixture failure"))
-    browser = AsyncMock(return_value=(200, html, URL, None))
+    browser = AsyncMock(return_value=(200, html, URL, None, None))
     monkeypatch.setattr(scraper, "_fetch_static", static)
     monkeypatch.setattr(scraper, "_fetch_browser", browser)
     result = await scraper.scrape(URL, headers=CUSTOM)

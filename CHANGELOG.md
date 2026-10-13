@@ -6,6 +6,10 @@ versioning follows SemVer.
 ## [Unreleased]
 
 ### Added
+- Shared crawl scheduling safeguards: per-host concurrency, token-bucket admissions and robots
+  crawl-delay; bounded 429/5xx retries with Retry-After support and a finite manager-wide
+  page-fetch-attempt budget. Retries preserve the checkpoint frontier; cancellation releases
+  permits, and exhausted budgets fail jobs explicitly. Settings and restart scope are documented. (#27, #32)
 - `formats: ["screenshot"]` on `POST /v1/scrape` returns a base64-encoded PNG in `data.screenshot`.
   Screenshots always render in the browser, so `render: "static"` is rejected with HTTP 422.
 - `full_page` boolean on `POST /v1/scrape` (default `false`) captures the full scrollable page for screenshots.

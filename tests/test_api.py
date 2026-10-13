@@ -111,7 +111,9 @@ def test_crawl_lifecycle(client, monkeypatch):
         duration_ms=1.0,
     )
     monkeypatch.setattr(crawler, "scrape", AsyncMock(return_value=page))
+    monkeypatch.setattr(crawler, "validate_and_pin", AsyncMock(return_value=None))
     monkeypatch.setattr(robots, "is_allowed", AsyncMock(return_value=True))
+    monkeypatch.setattr(robots, "get_crawl_delay", AsyncMock(return_value=None))
     monkeypatch.setattr(ssrf, "validate_and_pin", AsyncMock(return_value=None))
 
     r = client.post(

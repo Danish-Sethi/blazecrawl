@@ -11,8 +11,12 @@ pin-at-connect, private-address blocking and request validation remain active.
 
 from __future__ import annotations
 
+import math
 import os
 from functools import lru_cache
+from typing import TypeVar
+
+_Number = TypeVar("_Number", int, float)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -34,6 +38,17 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _positive_number(name: str, default: _Number) -> _Number:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = type(default)(raw) if raw else default
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive finite {type(default).__name__}") from exc
+    if value <= 0 or (isinstance(value, float) and not math.isfinite(value)):
+        raise ValueError(f"{name} must be a positive finite {type(default).__name__}")
+    return value
 
 
 class Settings:
@@ -86,7 +101,17 @@ class Settings:
         # Crawl limits.
         self.CRAWL_MAX_PAGES_DEFAULT: int = _env_int("CRAWL_MAX_PAGES_DEFAULT", 50)
         self.CRAWL_MAX_DEPTH_DEFAULT: int = _env_int("CRAWL_MAX_DEPTH_DEFAULT", 2)
-        self.CRAWL_MAX_CONCURRENCY: int = _env_int("CRAWL_MAX_CONCURRENCY", 4)
+        self.CRAWL_MAX_CONCURRENCY: int = _positive_number("CRAWL_MAX_CONCURRENCY", 4)
+        self.CRAWL_HOST_CONCURRENCY = _positive_number("CRAWL_HOST_CONCURRENCY", 2)
+        self.CRAWL_HOST_RATE = _positive_number("CRAWL_HOST_RATE", 1.0)
+        if not math.isfinite(1 / self.CRAWL_HOST_RATE):
+            raise ValueError("CRAWL_HOST_RATE must have a finite reciprocal")
+        self.CRAWL_HOST_BURST = _positive_number("CRAWL_HOST_BURST", 2)
+        self.CRAWL_FETCH_BUDGET = _positive_number("CRAWL_FETCH_BUDGET", 10000)
+        self.CRAWL_PAGE_ATTEMPTS = _positive_number("CRAWL_PAGE_ATTEMPTS", 3)
+        self.CRAWL_PAGE_DEADLINE_SECONDS = _positive_number("CRAWL_PAGE_DEADLINE_SECONDS", 120.0)
+        self.CRAWL_BACKOFF_SECONDS = _positive_number("CRAWL_BACKOFF_SECONDS", 1.0)
+        self.CRAWL_BACKOFF_MAX_SECONDS = _positive_number("CRAWL_BACKOFF_MAX_SECONDS", 30.0)
 
         # Outbound fetch guardrails.
         self.MAX_RESPONSE_BYTES: int = _env_int("MAX_RESPONSE_BYTES", 20 * 1024 * 1024)

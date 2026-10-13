@@ -118,7 +118,7 @@ async def test_real_browser_scopes_headers_on_every_hop_and_resource(
         )
         monkeypatch.setattr(scraper, "get_browser_pool", lambda: pool)
         try:
-            status, html, final_url, png = await scraper._fetch_browser(
+            status, html, final_url, png, _retry_after = await scraper._fetch_browser(
                 urls[0] + path,
                 10000,
                 "BaselineBrowser/1.0",

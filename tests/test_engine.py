@@ -104,7 +104,7 @@ async def test_scrape_screenshot_goes_to_browser_and_forwards_full_page(monkeypa
         url, timeout_ms, user_agent, headers=None, *, screenshot=False, full_page=False
     ):
         calls.append((screenshot, full_page, headers))
-        return 200, "<html><body><p>hi</p></body></html>", url, PNG_SIGNATURE + b"fake"
+        return 200, "<html><body><p>hi</p></body></html>", url, PNG_SIGNATURE + b"fake", None
 
     monkeypatch.setattr(scraper, "_fetch_static", fake_fetch_static)
     monkeypatch.setattr(scraper, "_fetch_browser", fake_fetch_browser)
@@ -119,7 +119,7 @@ async def test_scrape_screenshot_goes_to_browser_and_forwards_full_page(monkeypa
 
 async def test_auto_fallback_does_not_swallow_screenshot_cap(monkeypatch):
     async def thin_static(*args, **kwargs):
-        return 200, "<html><body><p>tiny</p></body></html>", "https://example.com/"
+        return 200, "<html><body><p>tiny</p></body></html>", "https://example.com/", None
 
     async def oversize_browser(*args, **kwargs):
         raise ScreenshotTooLargeError("too big", details={"size_bytes": 2, "max_bytes": 1})
