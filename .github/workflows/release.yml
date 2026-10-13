@@ -131,7 +131,7 @@ jobs:
           kill $server_pid 2>/dev/null || true
           [ "$health_version" = "$EXPECTED_VERSION" ] || { echo "/health reported version '$health_version', expected '$EXPECTED_VERSION'"; cat /tmp/blazecrawl-server.log; exit 1; }
           echo "/health version OK: $health_version"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-distributions
           path: |
@@ -182,7 +182,7 @@ jobs:
           mkdir /tmp/blazecrawl-npm-smoke && cd /tmp/blazecrawl-npm-smoke && npm init -y && npm install "$GITHUB_WORKSPACE/sdks/node/$(node -p "require('$GITHUB_WORKSPACE/sdks/node/pack.json')[0].filename")" "$GITHUB_WORKSPACE/mcp/node/$(node -p "require('$GITHUB_WORKSPACE/mcp/node/pack.json')[0].filename")"
           node --input-type=module -e 'import { BlazeCrawl } from "@blazecrawl/sdk"; if (typeof BlazeCrawl !== "function") process.exit(1)'
           ./node_modules/.bin/blazecrawl-mcp --help >/dev/null
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: node-distributions
           path: |
