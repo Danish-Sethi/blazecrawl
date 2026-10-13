@@ -70,7 +70,7 @@ class CrawlGovernor:
         self._semaphore = semaphore
         self._hosts: dict[str, _Host] = {}
 
-    def _check_budget(self) -> None:
+    def check_budget(self) -> None:
         if self.attempts >= self.config.CRAWL_FETCH_BUDGET:
             raise CrawlBudgetExceeded(
                 f"Crawl page-fetch attempt budget exhausted ({self.config.CRAWL_FETCH_BUDGET})"
@@ -119,7 +119,7 @@ class CrawlGovernor:
         )
         host.crawl_delay = max(host.crawl_delay, delay)
         while True:
-            self._check_budget()
+            self.check_budget()
             wait = self._delay(host)
             if deadline is not None and wait >= deadline - self.clock():
                 raise CrawlFetchDenied("Crawl page deadline exhausted while waiting for admission")
@@ -130,7 +130,7 @@ class CrawlGovernor:
             try:
                 await self._semaphore.acquire()
                 try:
-                    self._check_budget()
+                    self.check_budget()
                     # Another job may have admitted while these semaphores were awaited.
                     if self._delay(host):
                         continue

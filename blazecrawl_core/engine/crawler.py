@@ -408,6 +408,7 @@ class CrawlManager:
                     raise CrawlFetchDenied(
                         f"HTTP {result.status_code}: crawl page-fetch attempt limit exhausted"
                     )
+                governor.check_budget()
                 if wait >= deadline - governor.clock():
                     raise CrawlFetchDenied(
                         f"HTTP {result.status_code}: crawl page deadline exhausted"

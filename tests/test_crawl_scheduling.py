@@ -344,6 +344,7 @@ async def test_shared_budget_counts_retries_and_explicitly_fails_jobs(web, monke
         assert job.pages_crawled == 0 and not job.visited
         assert job.frontier == [(job.seed, 0)]
     assert scraper._fetch_static.await_count == 2
+    assert clock.sleeps == [1.0]  # don't wait for another retry after the budget is spent
 
 
 async def test_concurrent_jobs_cannot_overspend_shared_budget(web, monkeypatch):
@@ -381,6 +382,42 @@ async def test_auto_browser_fallback_is_another_budgeted_page_attempt(web, monke
     job = await mgr.create_job(URL, 1, 0)
     await settle(mgr, job)
     assert job.status == "failed" and "budget exhausted" in job.error
+    assert mgr._governor.attempts == 1
+    browser.assert_not_awaited()
+
+
+async def test_successful_browser_fallback_obeys_robots_delay_and_counts_both_attempts(
+    web, monkeypatch
+):
+    clock = Clock()
+    mgr = manager(clock)
+    robots.get_crawl_delay.return_value = 3
+    times = []
+
+    async def static(url, *_args):
+        times.append(clock())
+        return 200, "<p>Thin</p>", url, None
+
+    async def browser(url, *_args):
+        times.append(clock())
+        return 200, HTML, url, None
+
+    monkeypatch.setattr(scraper, "_fetch_static", static)
+    monkeypatch.setattr(scraper, "_fetch_browser", browser)
+    job = await mgr.create_job(URL, 1, 0)
+    await settle(mgr, job)
+    assert times == [0, 3]
+    assert job.pages_crawled == 1 and mgr._governor.attempts == 2
+
+
+async def test_static_network_error_fallback_cannot_bypass_page_attempt_limit(web, monkeypatch):
+    mgr = manager(Clock(), CRAWL_PAGE_ATTEMPTS=1)
+    monkeypatch.setattr(scraper, "_fetch_static", AsyncMock(side_effect=OSError("offline")))
+    browser = AsyncMock()
+    monkeypatch.setattr(scraper, "_fetch_browser", browser)
+    job = await mgr.create_job(URL, 1, 0)
+    await settle(mgr, job)
+    assert job.pages_failed == 1 and job.pages_crawled == 0
     assert mgr._governor.attempts == 1
     browser.assert_not_awaited()
 
