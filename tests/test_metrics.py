@@ -54,7 +54,7 @@ async def pool(monkeypatch):
     proxy = SimpleNamespace(
         start=AsyncMock(return_value="http://127.0.0.1:1234"), close=AsyncMock()
     )
-    monkeypatch.setattr(browser_pool, "BrowserEgressProxy", lambda: proxy)
+    monkeypatch.setattr(browser_pool, "BrowserEgressProxy", MagicMock(return_value=proxy))
     monkeypatch.setattr(browser_pool, "_guard_new_pages", lambda context: None)
     instance = browser_pool.BrowserPool(pool_size=2)
     monkeypatch.setattr(browser_pool, "_browser_pool", instance)
@@ -111,6 +111,9 @@ async def test_pool_lifecycle_and_monotonic_metrics(pool):
     assert sample(pool, "size") == 0
     await pool.startup()
     await pool.startup()
+    browser_pool.BrowserEgressProxy.assert_called_once_with(
+        upstream_proxy_url=settings.EGRESS_UPSTREAM_PROXY
+    )
     assert sample(pool, "size") == 2
     context = await pool.acquire()
     assert sample(pool, "active_contexts") == 1
@@ -255,10 +258,12 @@ async def test_cancelled_startup_cleans_partial_pool(pool):
 
     browser.new_context.side_effect = create
     task = asyncio.create_task(pool.startup())
-    await entered.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
     assert sample(pool, "size") == 0
     assert sample(pool, "active_contexts") == 0
     assert sample(pool, "errors_total") == 0

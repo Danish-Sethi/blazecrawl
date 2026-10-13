@@ -187,7 +187,9 @@ class BrowserPool:
             self._semaphore = asyncio.Semaphore(self.max_concurrent)
             try:
                 self._playwright = await async_playwright().start()
-                self._egress_proxy = BrowserEgressProxy()
+                self._egress_proxy = BrowserEgressProxy(
+                    upstream_proxy_url=settings.EGRESS_UPSTREAM_PROXY
+                )
                 proxy_server = await self._egress_proxy.start()
                 self._browser = await self._playwright.chromium.launch(
                     headless=settings.BROWSER_HEADLESS,

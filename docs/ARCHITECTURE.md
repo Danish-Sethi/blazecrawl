@@ -47,6 +47,19 @@ BlazeCrawl Core is a single-node, self-hostable web-data engine.
    abort before any IO.
 4. **Self-host first.** One `docker compose up` reaches a healthy, useful API.
 
+## Optional upstream egress
+
+With `EGRESS_UPSTREAM_PROXY` unset, static fetches use direct pinned sockets and
+Chromium uses the existing validating loopback proxy. When configured, static
+fetches reuse that controlled proxy while keeping the shared redirect/header/body
+loop in `egress.py`. `browser_proxy.py` validates every destination connection;
+`upstream_proxy.py` freshly validates and pins the proxy endpoint and negotiates
+CONNECT to the destination's numeric IP. The target hostname never reaches the
+upstream proxy for DNS resolution. Origin Host, TLS SNI and certificate
+verification are preserved; proxy credentials exist only in CONNECT headers.
+See [SECURITY_MODEL.md](SECURITY_MODEL.md#optional-upstream-proxy) for constraints
+and the remote-proxy trust boundary.
+
 ## Hybrid rendering
 
 `scraper.scrape(render="auto")` first attempts a cheap SSRF-pinned static HTTP

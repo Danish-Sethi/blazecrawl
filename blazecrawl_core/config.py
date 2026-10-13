@@ -116,6 +116,11 @@ class Settings:
         # Outbound fetch guardrails.
         self.MAX_RESPONSE_BYTES: int = _env_int("MAX_RESPONSE_BYTES", 20 * 1024 * 1024)
         self.MAX_REDIRECTS: int = _env_int("MAX_REDIRECTS", 5)
+        self.EGRESS_UPSTREAM_PROXY: str | None = os.environ.get("EGRESS_UPSTREAM_PROXY")
+        if self.EGRESS_UPSTREAM_PROXY is not None:
+            from blazecrawl_core.network.upstream_proxy import UpstreamProxy
+
+            UpstreamProxy.parse(self.EGRESS_UPSTREAM_PROXY)
 
         # robots.txt enforcement is ON by default and cannot be disabled in the
         # OSS core via configuration (the commercial bypass workflow is not part
