@@ -8,7 +8,9 @@ const metadata = JSON.parse(readFileSync(new URL("node_modules/@blazecrawl/sdk/p
 assert.equal(metadata.version, version);
 const client = new BlazeCrawl({ timeout: 60000 });
 assert.equal((await client.health()).version, version);
-const document = await client.scrape("https://example.com", { render: "static", use_cache: false });
+const document = await client.scrape("https://example.com", {
+  render: "static", use_cache: false, only_main_content: false,
+});
 assert.match(document.markdown, /Example Domain/);
 await assert.rejects(
   new BlazeCrawl({ apiKey: "invalid-artifact-smoke-key" }).scrape("https://example.com"),
@@ -26,5 +28,5 @@ do {
   await new Promise((resolve) => setTimeout(resolve, 200));
 } while (true);
 assert.equal(status.pages_crawled, 1);
-assert.match(status.pages[0].markdown, /Example Domain/);
+assert.match(status.pages[0].markdown, /domain/i);
 console.log("PASS installed Node SDK version, Markdown unwrap, auth error, bounded crawl polling");

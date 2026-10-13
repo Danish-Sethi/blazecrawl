@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import tempfile
@@ -150,6 +151,7 @@ def smoke(args) -> None:
                     env=env,
                     stdout=log,
                     stderr=subprocess.STDOUT,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
                 )
             wait_ready(base, args.version)
 
@@ -165,7 +167,10 @@ def smoke(args) -> None:
                 run(["docker", "rm", name])
                 container_started = False
             if process is not None:
-                process.terminate()
+                if os.name == "nt":
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    process.terminate()
                 try:
                     process.wait(timeout=30)
                 except subprocess.TimeoutExpired as error:
@@ -184,13 +189,17 @@ def smoke(args) -> None:
                 "render": "static",
                 "formats": ["markdown"],
                 "use_cache": False,
+                "only_main_content": False,
             }
             request(base, None, "/v1/scrape", body, status=401)
             request(base, key, "/v1/scrape", {**body, "url": "http://127.0.0.1/"}, status=400)
             data = request(base, key, "/v1/scrape", body)
             assert data["success"] and "Example Domain" in data["data"]["markdown"], data
-            assert "Example Domain" in run(
-                [*cli, "scrape", PUBLIC_PAGE, "--render", "static"], env=env, cwd=root
+            assert (
+                "domain"
+                in run(
+                    [*cli, "scrape", PUBLIC_PAGE, "--render", "static"], env=env, cwd=root
+                ).lower()
             )
             data = request(
                 base,

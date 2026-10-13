@@ -71,6 +71,9 @@ uv run --directory mcp/python --with pytest pytest tests -q
 Tests must pass and lint must be clean before a PR is merged.
 The Linux read-only release candidate job additionally builds/installs all five
 distributions and tests the image. See [release preflight](docs/RELEASING.md).
+On Windows with Node 20, shells do not expand test globs; use
+`node --test sdks\node\test\sdk.test.mjs mcp\node\test\schema.test.mjs` for the two
+Node suites instead of the glob-based npm command.
 
 ## Style
 

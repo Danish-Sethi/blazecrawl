@@ -102,7 +102,7 @@ curl --retry 30 --retry-connrefused --retry-delay 1 --max-time 5 \
 curl -fsS "$BLAZECRAWL_API_URL/v1/scrape" \
   -H "Authorization: Bearer $BLAZECRAWL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com","formats":["markdown"],"render":"static"}' \
+  -d '{"url":"https://example.com","formats":["markdown"],"render":"static","only_main_content":false}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["markdown"])'
 ```
 
@@ -155,7 +155,7 @@ if ($null -eq $ready) { throw "API not ready; inspect docker logs blazecrawl." }
 $ready
 
 $headers = @{ Authorization = "Bearer $env:BLAZECRAWL_API_KEY" }
-$body = @{ url = "https://example.com"; formats = @("markdown"); render = "static" } | ConvertTo-Json
+$body = @{ url = "https://example.com"; formats = @("markdown"); render = "static"; only_main_content = $false } | ConvertTo-Json
 $result = Invoke-RestMethod -Uri "$env:BLAZECRAWL_API_URL/v1/scrape" -Method Post -Headers $headers -ContentType "application/json" -Body $body
 $result.data.markdown
 ```
