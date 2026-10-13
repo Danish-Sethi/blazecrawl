@@ -64,6 +64,9 @@ class Settings:
         self.BROWSER_HEADLESS: bool = _env_bool("BROWSER_HEADLESS", True)
         self.DEFAULT_TIMEOUT_MS: int = _env_int("DEFAULT_TIMEOUT_MS", 30000)
 
+        # Screenshot capture (formats=["screenshot"]): hard cap on raw PNG bytes.
+        self.SCREENSHOT_MAX_BYTES: int = _env_int("SCREENSHOT_MAX_BYTES", 5 * 1024 * 1024)
+
         # Caching (Redis optional; falls back to in-process when unset).
         self.REDIS_URL: str | None = os.environ.get("REDIS_URL") or None
         self.CACHE_DEFAULT_TTL_SECONDS: int = _env_int("CACHE_DEFAULT_TTL_SECONDS", 3600)

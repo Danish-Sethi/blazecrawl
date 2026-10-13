@@ -11,12 +11,13 @@ guarantees while staying dependency-light and self-hostable.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import time
 from dataclasses import dataclass
 
 from blazecrawl_core.config import settings
-from blazecrawl_core.engine.browser_pool import get_browser_pool
+from blazecrawl_core.engine.browser_pool import get_browser_pool, take_screenshot
 from blazecrawl_core.engine.content_extractor import (
     ExtractedContent,
     ExtractOptions,
@@ -45,6 +46,7 @@ class ScrapeResult:
     metadata: dict
     render: str  # "static" | "browser"
     duration_ms: float
+    screenshot: str | None = None  # base64-encoded PNG
 
     def to_dict(self) -> dict:
         return {
@@ -56,6 +58,7 @@ class ScrapeResult:
             "plaintext": self.plaintext,
             "links": self.links,
             "images": self.images,
+            "screenshot": self.screenshot,
             "metadata": self.metadata,
             "render": self.render,
             "duration_ms": round(self.duration_ms, 2),
@@ -74,7 +77,13 @@ def _options_from(formats: list[str] | None, only_main_content: bool) -> Extract
 
 
 def _to_result(
-    url: str, status: int, ext: ExtractedContent, render: str, t0: float, final_url: str
+    url: str,
+    status: int,
+    ext: ExtractedContent,
+    render: str,
+    t0: float,
+    final_url: str,
+    screenshot: bytes | None = None,
 ) -> ScrapeResult:
     return ScrapeResult(
         url=url,
@@ -98,6 +107,7 @@ def _to_result(
         },
         render=render,
         duration_ms=(time.perf_counter() - t0) * 1000,
+        screenshot=base64.b64encode(screenshot).decode("ascii") if screenshot else None,
     )
 
 
@@ -112,7 +122,14 @@ async def _fetch_static(url: str, timeout_ms: int, user_agent: str) -> tuple[int
     return resp.status_code, resp.text, resp.final_url
 
 
-async def _fetch_browser(url: str, timeout_ms: int, user_agent: str) -> tuple[int, str, str]:
+async def _fetch_browser(
+    url: str,
+    timeout_ms: int,
+    user_agent: str,
+    *,
+    screenshot: bool = False,
+    full_page: bool = False,
+) -> tuple[int, str, str, bytes | None]:
     pool = get_browser_pool()
     context = await pool.acquire(timeout_ms=timeout_ms)
     try:
@@ -124,9 +141,14 @@ async def _fetch_browser(url: str, timeout_ms: int, user_agent: str) -> tuple[in
         with contextlib.suppress(Exception):
             await page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
         html = await page.content()
+        png = None
+        if screenshot:
+            png = await take_screenshot(
+                page, full_page=full_page, max_bytes=settings.SCREENSHOT_MAX_BYTES
+            )
         status = response.status if response else 200
         final_url = page.url
-        return status, html, final_url
+        return status, html, final_url, png
     finally:
         await pool.release(context)
 
@@ -139,16 +161,20 @@ async def scrape(
     timeout_ms: int | None = None,
     render: str = "auto",
     user_agent: str = "BlazeCrawl/0.1.0",
+    full_page: bool = False,
 ) -> ScrapeResult:
     """Scrape a URL to clean Markdown/HTML/text, egress-guarded.
 
     Args:
         url: Target URL (http/https only; private/reserved addresses rejected).
-        formats: Subset of {"markdown","html","text"/"plaintext","links","images"}.
+        formats: Subset of {"markdown","html","text"/"plaintext","links","images","screenshot"}.
+            "screenshot" needs a browser render, so it skips the static fetch and
+            is rejected with render="static".
         only_main_content: Strip boilerplate via readability/trafilatura.
         timeout_ms: Request timeout.
         render: "auto" (static w/ browser fallback), "static", or "browser".
         user_agent: Outbound User-Agent header used for static and browser fetches.
+        full_page: Capture the full scrollable page for "screenshot" (default: viewport).
     """
     t0 = time.perf_counter()
     timeout_ms = timeout_ms or settings.DEFAULT_TIMEOUT_MS
@@ -157,12 +183,20 @@ async def scrape(
 
     if render not in ("auto", "static", "browser"):
         raise ValueError("render must be one of auto|static|browser")
+    want_screenshot = "screenshot" in (formats or [])
+    if want_screenshot and render == "static":
+        raise ValueError(
+            "formats 'screenshot' requires browser rendering; use render auto or browser"
+        )
 
-    # Browser-only path.
-    if render == "browser":
-        status, html, final_url = await _fetch_browser(url, timeout_ms, user_agent)
+    # Browser-only path. Screenshots always need a rendered page, so they go
+    # straight to the browser even when render is "auto".
+    if render == "browser" or want_screenshot:
+        status, html, final_url, png = await _fetch_browser(
+            url, timeout_ms, user_agent, screenshot=want_screenshot, full_page=full_page
+        )
         ext = await extractor.extract(html, final_url, opts)
-        return _to_result(url, status, ext, "browser", t0, final_url)
+        return _to_result(url, status, ext, "browser", t0, final_url, png)
 
     # Static path (with auto fallback to browser).
     try:
@@ -173,7 +207,7 @@ async def scrape(
         if render == "static":
             raise
         logger.info("Static fetch failed, falling back to browser", url=url, error=str(e))
-        status, html, final_url = await _fetch_browser(url, timeout_ms, user_agent)
+        status, html, final_url, _ = await _fetch_browser(url, timeout_ms, user_agent)
         ext = await extractor.extract(html, final_url, opts)
         return _to_result(url, status, ext, "browser", t0, final_url)
 
@@ -185,7 +219,7 @@ async def scrape(
         if words < _MIN_STATIC_WORDS and status == 200:
             logger.info("Static content thin; retrying with browser", url=url, words=words)
             try:
-                bstatus, bhtml, bfinal = await _fetch_browser(url, timeout_ms, user_agent)
+                bstatus, bhtml, bfinal, _ = await _fetch_browser(url, timeout_ms, user_agent)
                 bext = await extractor.extract(bhtml, bfinal, opts)
                 if len((bext.markdown or "").split()) > words:
                     return _to_result(url, bstatus, bext, "browser", t0, bfinal)

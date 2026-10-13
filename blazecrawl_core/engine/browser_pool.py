@@ -28,6 +28,7 @@ from blazecrawl_core.config import settings
 from blazecrawl_core.exceptions import (
     BlazeCrawlError,
     BrowserPoolExhaustedError,
+    ScreenshotTooLargeError,
 )
 from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.browser_proxy import BrowserEgressProxy
@@ -83,6 +84,22 @@ def _guard_new_pages(context: BrowserContext) -> None:
     from blazecrawl_core.network.egress import install_context_popup_ssrf_guard
 
     install_context_popup_ssrf_guard(context)
+
+
+async def take_screenshot(page: Page, *, full_page: bool, max_bytes: int) -> bytes:
+    """Capture ``page`` as PNG, rejecting the whole capture if it exceeds ``max_bytes``.
+
+    The size check happens before anything is returned, so an oversized
+    capture never leaves this function, not even partially.
+    """
+    png = await page.screenshot(type="png", full_page=full_page)
+    if len(png) > max_bytes:
+        raise ScreenshotTooLargeError(
+            f"Screenshot is {len(png)} bytes, which exceeds the {max_bytes}-byte limit "
+            "(SCREENSHOT_MAX_BYTES).",
+            details={"size_bytes": len(png), "max_bytes": max_bytes},
+        )
+    return png
 
 
 class BrowserPool:

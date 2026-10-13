@@ -75,8 +75,12 @@ def make_key(
     only_main_content: bool,
     render: str = "auto",
     user_agent: str = "BlazeCrawl/0.1.0",
+    full_page: bool = False,
 ) -> str:
     base = f"{url}|{sorted(formats or ['markdown'])}|{int(only_main_content)}|{render}|{user_agent}"
+    # full_page only changes screenshot output, so it only varies the key for screenshot requests.
+    if "screenshot" in (formats or []):
+        base += f"|full_page={full_page}"
     return "bc:scrape:" + hashlib.sha256(base.encode()).hexdigest()
 
 
@@ -86,9 +90,12 @@ async def get_cached(
     only_main_content: bool,
     render: str = "auto",
     user_agent: str = "BlazeCrawl/0.1.0",
+    full_page: bool = False,
 ) -> dict | None:
     try:
-        raw = await _get_cache().get(make_key(url, formats, only_main_content, render, user_agent))
+        raw = await _get_cache().get(
+            make_key(url, formats, only_main_content, render, user_agent, full_page)
+        )
         return json.loads(raw) if raw else None
     except Exception as e:
         logger.warning("Cache get failed", error=str(e))
@@ -103,10 +110,11 @@ async def set_cached(
     ttl: int | None = None,
     render: str = "auto",
     user_agent: str = "BlazeCrawl/0.1.0",
+    full_page: bool = False,
 ) -> None:
     try:
         await _get_cache().set(
-            make_key(url, formats, only_main_content, render, user_agent),
+            make_key(url, formats, only_main_content, render, user_agent, full_page),
             json.dumps(payload),
             ttl or settings.CACHE_DEFAULT_TTL_SECONDS,
         )

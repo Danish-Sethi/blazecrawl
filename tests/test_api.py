@@ -1,5 +1,6 @@
 """API journey tests using FastAPI TestClient (auth-disabled loopback mode)."""
 
+import base64
 import os
 
 import pytest
@@ -11,12 +12,17 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from blazecrawl_core import __version__  # noqa: E402
 from blazecrawl_core.api.main import app  # noqa: E402
+from blazecrawl_core.config import settings  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(app) as c:
-        yield c
+    # settings is built at import time, so the env default above can lose to an earlier import.
+    # Pin auth-disabled on the settings object itself so these tests don't depend on import order.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(settings, "BLAZECRAWL_AUTH_DISABLED", True)
+        with TestClient(app) as c:
+            yield c
 
 
 def test_health(client):
@@ -107,3 +113,37 @@ def test_crawl_blocks_ssrf(client):
 
 def test_crawl_not_found(client):
     assert client.get("/v1/crawl/does-not-exist").status_code == 404
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def test_scrape_screenshot_returns_base64_png(client):
+    r = client.post(
+        "/v1/scrape",
+        json={"url": "https://example.com", "formats": ["screenshot"], "use_cache": False},
+    )
+    assert r.status_code == 200
+    png = base64.b64decode(r.json()["data"]["screenshot"], validate=True)
+    assert png.startswith(PNG_SIGNATURE)
+
+
+def test_scrape_screenshot_over_cap_returns_413_without_data(client, monkeypatch):
+    monkeypatch.setattr(settings, "SCREENSHOT_MAX_BYTES", 1024)
+    r = client.post(
+        "/v1/scrape",
+        json={"url": "https://example.com", "formats": ["screenshot"], "use_cache": False},
+    )
+    assert r.status_code == 413
+    body = r.json()
+    assert "data" not in body
+    assert body["detail"]["error"] == "screenshot_too_large"
+    assert body["detail"]["max_bytes"] == 1024
+
+
+def test_scrape_screenshot_rejects_static_render(client):
+    r = client.post(
+        "/v1/scrape",
+        json={"url": "https://example.com", "formats": ["screenshot"], "render": "static"},
+    )
+    assert r.status_code == 422

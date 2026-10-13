@@ -256,7 +256,7 @@ Prefer Node.js? See the [equivalent `npx` configuration](mcp/node/README.md).
 |---|---|
 | `GET /health` | Liveness, version, and runtime mode. |
 | `GET /ready` | Browser-pool, cache, and queue status. |
-| `POST /v1/scrape` | One page to Markdown, HTML, text, links, or images. |
+| `POST /v1/scrape` | One page to Markdown, HTML, text, links, images, or a PNG screenshot. |
 | `POST /v1/map` | Discover URLs from sitemaps and the link graph. |
 | `POST /v1/crawl` | Start an asynchronous, same-origin crawl. |
 | `GET /v1/crawl/{job_id}` | Poll status and collected page data. |
@@ -267,6 +267,13 @@ or `auto` (static first, browser fallback for thin content). See [table conversi
 when working with tabular pages. The current source checkout also supports `user_agent` per scrape
 or crawl; it selects robots.txt rules for crawls. That field is **not in the published `v0.1.2` schema**.
 Your running instance's `/docs` is the authoritative version-specific contract.
+
+**Screenshots (source checkout, not in the published `v0.1.2` schema):** `"formats": ["screenshot"]` returns
+a base64-encoded PNG at `data.screenshot`. Screenshots always render in the browser, so `render` must be
+`auto` or `browser`; `render: "static"` is rejected with HTTP `422`. Set `"full_page": true` to capture the
+whole scrollable page instead of the viewport (default `false`). A capture larger than `SCREENSHOT_MAX_BYTES`
+(default 5 MB of raw PNG bytes) is rejected with HTTP `413` and `error: "screenshot_too_large"`; no partial
+image is returned.
 
 <details>
 <summary><strong>Map and crawl over HTTP, with a real walkthrough</strong></summary>

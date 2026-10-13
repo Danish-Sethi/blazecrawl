@@ -3,6 +3,15 @@
 All notable changes to BlazeCrawl Core. Format follows Keep a Changelog;
 versioning follows SemVer.
 
+## [Unreleased]
+
+### Added
+- `formats: ["screenshot"]` on `POST /v1/scrape` returns a base64-encoded PNG in `data.screenshot`.
+  Screenshots always render in the browser, so `render: "static"` is rejected with HTTP 422.
+- `full_page` boolean on `POST /v1/scrape` (default `false`) captures the full scrollable page for screenshots.
+- `SCREENSHOT_MAX_BYTES` setting (default 5 MB of raw PNG bytes). Captures over the cap are rejected with
+  HTTP 413 (`error: "screenshot_too_large"`) and never return partial data.
+
 ## [0.1.2] — Distribution integrity repair
 
 ### Fixed

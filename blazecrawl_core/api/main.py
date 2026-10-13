@@ -26,7 +26,7 @@ from blazecrawl_core.engine.browser_pool import get_browser_pool
 from blazecrawl_core.engine.crawler import get_crawl_manager
 from blazecrawl_core.engine.mapper import map_site
 from blazecrawl_core.engine.scraper import scrape
-from blazecrawl_core.exceptions import BlazeCrawlError, get_status_code
+from blazecrawl_core.exceptions import BlazeCrawlError, ScreenshotTooLargeError, get_status_code
 from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.ssrf import SSRFValidationError
 
@@ -92,6 +92,7 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
                 payload.only_main_content,
                 payload.render,
                 payload.user_agent,
+                payload.full_page,
             )
             if hit is not None:
                 return ScrapeResponse(success=True, data={**hit, "cached": True})
@@ -103,6 +104,7 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
             timeout_ms=payload.timeout_ms,
             render=payload.render,
             user_agent=payload.user_agent,
+            full_page=payload.full_page,
         )
         data = result.to_dict()
         if payload.use_cache:
@@ -113,12 +115,22 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
                 data,
                 render=payload.render,
                 user_agent=payload.user_agent,
+                full_page=payload.full_page,
             )
         return ScrapeResponse(success=True, data=data)
     except SSRFValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "url_rejected", "message": str(e)},
+        ) from e
+    except ScreenshotTooLargeError as e:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": "screenshot_too_large",
+                "message": e.message,
+                "max_bytes": settings.SCREENSHOT_MAX_BYTES,
+            },
         ) from e
     except BlazeCrawlError as e:
         raise HTTPException(
