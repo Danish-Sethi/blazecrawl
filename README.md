@@ -268,7 +268,9 @@ Prefer Node.js? See the [equivalent `npx` configuration](mcp/node/README.md).
 All `/v1/` endpoints require your bearer key by default. Scrape `render` accepts `static`, `browser`,
 or `auto` (static first, browser fallback for thin content). See [table conversion limits](docs/MARKDOWN_TABLES.md)
 when working with tabular pages. The current source checkout also supports `user_agent` per scrape
-or crawl; it selects robots.txt rules for crawls. That field is **not in the published `v0.1.2` schema**.
+or crawl; it selects robots.txt rules for crawls. The source checkout also supports a `headers`
+field on scrape for custom outbound HTTP headers (User-Agent, Accept-Language, Authorization, etc.).
+Both fields are **not in the published `v0.1.2` schema**.
 Your running instance's `/docs` is the authoritative version-specific contract.
 
 **Screenshots (source checkout, not in the published `v0.1.2` schema):** `"formats": ["screenshot"]` returns
@@ -277,6 +279,21 @@ a base64-encoded PNG at `data.screenshot`. Screenshots always render in the brow
 whole scrollable page instead of the viewport (default `false`). A capture larger than `SCREENSHOT_MAX_BYTES`
 (default 5 MB of raw PNG bytes) is rejected with HTTP `413` and `error: "screenshot_too_large"`; no partial
 image is returned.
+
+Custom header names are case-insensitive HTTP tokens; duplicate names ignoring case are rejected.
+Values must be printable ASCII (no CR/LF or control bytes). Limits: 32 headers, 128 characters per
+name, 4096 per value, and 8192 total wire bytes; User-Agent is limited to 200 characters.
+Transport-managed headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`,
+`Keep-Alive`, `Proxy-Connection`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`,
+`Upgrade`, `HTTP2-Settings`, `Expect`) are rejected. A `headers["User-Agent"]` override wins over
+`user_agent` only on the initial origin (scheme, hostname and effective port). Static requests
+permanently drop supplied headers when a redirect changes origin; browser requests apply them only
+to initial-origin requests, including redirects and subresources. Other origins retain the baseline
+`user_agent`. SSRF checks remain enforced on every hop. Browser custom headers require the pool's
+Chromium interception support and fail closed if it cannot be installed.
+Cache keys ignore header ordering and name casing, isolate different values, and retain existing
+keys when no custom headers are supplied. See the [custom-header examples](examples/README.md)
+for fake-credential demonstrations; never send real secrets to public echo services.
 
 ### Optional pool metrics (source checkout)
 
