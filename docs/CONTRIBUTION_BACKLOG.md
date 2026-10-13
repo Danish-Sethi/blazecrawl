@@ -1,7 +1,8 @@
 # Contribution Backlog
 
 A genuine, well-scoped backlog. Each item is independently mergeable and
-testable. Claim one by commenting on its issue (create it from this spec).
+testable. Claim an unfinished item by commenting on its existing issue; create
+one from this spec only if it is not already tracked. Completed items are marked below.
 
 Difficulty legend: 🟢 good-first-issue · 🟡 intermediate · 🔴 advanced.
 
@@ -88,10 +89,12 @@ Difficulty legend: 🟢 good-first-issue · 🟡 intermediate · 🔴 advanced.
 
 ### INT-3 🟡 Redis-backed crawl queue backend
 - **Files:** `engine/crawler.py`, new `engine/queue/redis_backend.py`
+- **Status:** still open; durable single-process job storage in #65 does not provide distributed execution or worker leases.
 - **Acceptance:** `CRAWL_QUEUE_BACKEND=redis` runs jobs across processes; parity tests vs memory.
 
 ### INT-4 🟡 Screenshot output format
 - **Files:** `engine/scraper.py`, `engine/browser_pool.py`, `api/schemas.py`
+- **Status:** implemented in [#64](https://github.com/Danish-Sethi/blazecrawl/pull/64), closing #26; API and CLI support viewport/full-page PNG capture with a size cap.
 - **Acceptance:** `formats:["screenshot"]` returns base64 PNG (full_page option); size-capped; test.
 
 ### INT-5 🟡 PDF parsing with guards
@@ -104,11 +107,12 @@ Difficulty legend: 🟢 good-first-issue · 🟡 intermediate · 🔴 advanced.
 
 ### INT-7 🟡 Browser-pool Prometheus metrics
 - **Files:** `engine/browser_pool.py`, `api/main.py`
+- **Status:** implemented in [#69](https://github.com/Danish-Sethi/blazecrawl/pull/69), closing #29; optional extra and explicit enablement, off by default.
 - **Acceptance:** `/metrics` exposes pool size, active, errors, page-creation latency; optional `[metrics]` extra.
 
 ### INT-8 🟡 Crawl checkpoint/resume
 - **Files:** `engine/crawler.py`
-- **Status:** implemented in #9/#31 (per-page checkpoints; Redis and opt-in disk stores; resume after restart)
+- **Status:** implemented in [#65](https://github.com/Danish-Sethi/blazecrawl/pull/65), closing #9 and #31; per-page Redis/disk checkpoints resume without re-fetching completed pages.
 - **Acceptance:** interrupted crawl can resume from persisted frontier (memory→disk snapshot); test.
 
 ### INT-9 🟡 Per-host crawl-delay + concurrency limiting
