@@ -14,6 +14,16 @@ versioning follows SemVer.
   screenshots. The setting must be a positive integer.
 - `blazecrawl scrape --formats screenshot --output page.png` (with `--full-page` for the whole page) in the
   source-checkout CLI.
+- Opt-in Prometheus `/metrics` endpoint via the `[metrics]` extra and
+  `METRICS_ENABLED=true`, exposing actual browser-pool size, active contexts,
+  lifecycle errors, and page-creation latency without URL/credential labels.
+  Disabled by default with no mandatory dependency; enabling without the extra
+  fails with actionable installation instructions.
+
+### Fixed
+- Browser-pool context/semaphore accounting on failed startup, restart,
+  acquisition failure, and cancellation; page-creation failures are counted
+  and release cleanup completes before a cancelled lease is returned.
 
 ## [0.1.2] — Distribution integrity repair
 
