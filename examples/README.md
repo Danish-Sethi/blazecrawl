@@ -52,3 +52,16 @@ the two server implementations and client-specific setup.
 > Accept-Language, Authorization, etc.). See [custom_headers.py](custom_headers.py)
 > and [custom_headers.mjs](custom_headers.mjs) for runnable examples.
 > That field is **not in the published `v0.1.2` schema**.
+
+The custom-header examples use the external `https://httpbin.org/headers` echo
+service and **fake** website credentials only. Your `BLAZECRAWL_API_KEY` stays
+on the SDK-to-BlazeCrawl request; it is not an outbound website header.
+Set `BLAZECRAWL_HEADER_DEMO_URL` to an echo endpoint you control to change the
+target. Local/private scrape targets remain blocked by SSRF policy.
+Run `python examples/custom_headers.py` (Python SDK installed) or
+`node examples/custom_headers.mjs` (uses this checkout's Node SDK).
+Both request `formats: ["text"]` and print the unwrapped `plaintext` response,
+so the returned User-Agent and language/auth headers can be compared directly.
+Header names ignore case; a custom User-Agent wins over `user_agent` on the
+initial origin only. Custom headers are bounded and origin-scoped on both
+static and browser fetches; see [API details](../README.md#api).

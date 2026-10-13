@@ -280,6 +280,21 @@ whole scrollable page instead of the viewport (default `false`). A capture large
 (default 5 MB of raw PNG bytes) is rejected with HTTP `413` and `error: "screenshot_too_large"`; no partial
 image is returned.
 
+Custom header names are case-insensitive HTTP tokens; duplicate names ignoring case are rejected.
+Values must be printable ASCII (no CR/LF or control bytes). Limits: 32 headers, 128 characters per
+name, 4096 per value, and 8192 total wire bytes; User-Agent is limited to 200 characters.
+Transport-managed headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`,
+`Keep-Alive`, `Proxy-Connection`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`,
+`Upgrade`, `HTTP2-Settings`, `Expect`) are rejected. A `headers["User-Agent"]` override wins over
+`user_agent` only on the initial origin (scheme, hostname and effective port). Static requests
+permanently drop supplied headers when a redirect changes origin; browser requests apply them only
+to initial-origin requests, including redirects and subresources. Other origins retain the baseline
+`user_agent`. SSRF checks remain enforced on every hop. Browser custom headers require the pool's
+Chromium interception support and fail closed if it cannot be installed.
+Cache keys ignore header ordering and name casing, isolate different values, and retain existing
+keys when no custom headers are supplied. See the [custom-header examples](examples/README.md)
+for fake-credential demonstrations; never send real secrets to public echo services.
+
 ### Optional pool metrics (source checkout)
 
 Install the `[metrics]` extra and set `METRICS_ENABLED=true` **before starting the server**:

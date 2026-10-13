@@ -31,6 +31,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from blazecrawl_core.logging import get_logger
+from blazecrawl_core.network.headers import http_origin, validate_headers, validate_user_agent
 from blazecrawl_core.network.ssrf import (
     PinnedTarget,
     SSRFValidationError,
@@ -119,9 +120,9 @@ class PinnedAsyncClient:
         """
         redirects: list[str] = []
         current_url = url
-        base_headers = dict(headers or {})
-        if self._user_agent:
-            base_headers.setdefault("User-Agent", self._user_agent)
+        base_headers = validate_headers(headers)
+        if self._user_agent is not None:
+            validate_user_agent(self._user_agent)
 
         for _hop in range(self._max_redirects + 1):
             # Validate + pin the CURRENT hop. Re-resolution happens here and only
@@ -130,6 +131,8 @@ class PinnedAsyncClient:
 
             connect_url = _pin_url_to_ip(target)
             req_headers = dict(base_headers)
+            if self._user_agent:
+                req_headers.setdefault("user-agent", self._user_agent)
             req_headers["Host"] = (
                 target.hostname if target.port in (80, 443) else f"{target.hostname}:{target.port}"
             )
@@ -187,6 +190,8 @@ class PinnedAsyncClient:
                 # Block https->http downgrade redirects.
                 if cur_scheme == "https" and next_scheme == "http":
                     raise SSRFValidationError("Blocked redirect: https→http downgrade")
+                if http_origin(current_url) != http_origin(next_url):
+                    base_headers = {}
                 redirects.append(next_url)
                 current_url = next_url
                 continue
@@ -226,7 +231,14 @@ async def safe_fetch(
     return await client.request(method, url, headers=headers)
 
 
-async def install_browser_ssrf_guard(page, *, allow_missing_route: bool = False) -> None:
+async def install_browser_ssrf_guard(
+    page,
+    *,
+    allow_missing_route: bool = False,
+    initial_url: str | None = None,
+    headers: dict[str, str] | None = None,
+    user_agent: str | None = None,
+) -> None:
     """Install a Playwright route guard that re-validates EVERY browser request.
 
     Chromium performs its own DNS, so HTTP-client IP pinning does not protect
@@ -267,7 +279,8 @@ async def install_browser_ssrf_guard(page, *, allow_missing_route: bool = False)
                 if inspect.isawaitable(res):
                     await res
             return
-        cont = getattr(route_obj, "continue_", None)
+        # Preserve previously installed routes, notably the pool's resource guard.
+        cont = getattr(route_obj, "fallback", None) or getattr(route_obj, "continue_", None)
         if callable(cont):
             res = cont()
             if inspect.isawaitable(res):
@@ -276,6 +289,50 @@ async def install_browser_ssrf_guard(page, *, allow_missing_route: bool = False)
     maybe = route("**/*", _guard)
     if inspect.isawaitable(maybe):
         await maybe
+
+    custom_headers = validate_headers(headers)
+    if not custom_headers:
+        return
+    if initial_url is None or user_agent is None:
+        raise ValueError("Origin-scoped browser headers require initial_url and user_agent")
+    validate_user_agent(user_agent)
+    origin = http_origin(initial_url)
+    # Playwright route header overrides persist across redirects, and its route
+    # handler only sees the first hop. CDP pauses every hop without replacing
+    # the existing page routes (including SSRF and resource-blocking handlers).
+    session = await page.context.new_cdp_session(page)
+
+    async def _scope_headers(event: dict) -> None:
+        request = event["request"]
+        req_url = request["url"]
+        try:
+            await validate_and_pin(req_url)
+        except SSRFValidationError:
+            logger.warning("Browser header guard blocked request", url=req_url)
+            await session.send(
+                "Fetch.failRequest",
+                {"requestId": event["requestId"], "errorReason": "BlockedByClient"},
+            )
+            return
+        scoped = {name.lower(): value for name, value in request["headers"].items()}
+        # Reconstruct each hop from Chromium's headers, never an earlier override.
+        for name in custom_headers:
+            scoped.pop(name, None)
+        scoped["user-agent"] = user_agent
+        if http_origin(req_url) == origin:
+            scoped.update(custom_headers)
+        await session.send(
+            "Fetch.continueRequest",
+            {
+                "requestId": event["requestId"],
+                "headers": [{"name": name, "value": value} for name, value in scoped.items()],
+            },
+        )
+
+    session.on("Fetch.requestPaused", _scope_headers)
+    await session.send(
+        "Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}
+    )
 
 
 def install_context_popup_ssrf_guard(context) -> None:
@@ -417,20 +474,23 @@ class PinnedProxyClient:
         headers: dict[str, str] | None = None,
         content: bytes | None = None,
     ) -> EgressResponse:
+        base_headers = validate_headers(headers)
+        if self._user_agent is not None:
+            validate_user_agent(self._user_agent)
         if not self._proxy_validated:
             await validate_proxy_endpoint(self._proxy_url)
             self._proxy_validated = True
 
         redirects: list[str] = []
         current_url = url
-        base_headers = dict(headers or {})
-        if self._user_agent:
-            base_headers.setdefault("User-Agent", self._user_agent)
 
         for _hop in range(self._max_redirects + 1):
             # UNCONDITIONAL target validation — identical to the direct path.
             # This is what stops the proxy from being an SSRF pivot.
             await validate_and_pin(current_url)
+            req_headers = dict(base_headers)
+            if self._user_agent:
+                req_headers.setdefault("user-agent", self._user_agent)
 
             async with httpx.AsyncClient(
                 proxy=self._proxy_url,
@@ -439,7 +499,7 @@ class PinnedProxyClient:
                 follow_redirects=False,  # manual: re-validate every hop
             ) as client:
                 request = client.build_request(
-                    method, current_url, headers=base_headers, content=content
+                    method, current_url, headers=req_headers, content=content
                 )
                 if self._max_bytes is not None:
                     response = await client.send(request, stream=True)
@@ -474,6 +534,8 @@ class PinnedProxyClient:
                 next_scheme = urlsplit(next_url).scheme.lower()
                 if cur_scheme == "https" and next_scheme == "http":
                     raise SSRFValidationError("Blocked redirect: https→http downgrade")
+                if http_origin(current_url) != http_origin(next_url):
+                    base_headers = {}
                 redirects.append(next_url)
                 current_url = next_url
                 continue

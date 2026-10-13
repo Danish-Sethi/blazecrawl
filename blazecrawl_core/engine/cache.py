@@ -16,6 +16,7 @@ import time
 
 from blazecrawl_core.config import settings
 from blazecrawl_core.logging import get_logger
+from blazecrawl_core.network.headers import validate_headers
 
 logger = get_logger(__name__)
 
@@ -78,11 +79,13 @@ def make_key(
     full_page: bool = False,
     headers: dict[str, str] | None = None,
 ) -> str:
-    headers_sorted = sorted((headers or {}).items())
-    base = f"{url}|{sorted(formats or ['markdown'])}|{int(only_main_content)}|{render}|{user_agent}|{headers_sorted}"
+    normalized = validate_headers(headers)
+    base = f"{url}|{sorted(formats or ['markdown'])}|{int(only_main_content)}|{render}|{user_agent}"
     # full_page only changes screenshot output, so it only varies the key for screenshot requests.
     if "screenshot" in (formats or []):
         base += f"|full_page={full_page}"
+    if normalized:
+        base += f"|{sorted(normalized.items())}"
     return "bc:scrape:" + hashlib.sha256(base.encode()).hexdigest()
 
 

@@ -26,6 +26,7 @@ from blazecrawl_core.engine.content_extractor import (
 from blazecrawl_core.exceptions import ScreenshotTooLargeError
 from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.egress import install_browser_ssrf_guard, safe_fetch
+from blazecrawl_core.network.headers import validate_headers, validate_user_agent
 from blazecrawl_core.network.ssrf import SSRFValidationError
 
 logger = get_logger(__name__)
@@ -112,7 +113,9 @@ def _to_result(
     )
 
 
-async def _fetch_static(url: str, timeout_ms: int, user_agent: str, headers: dict[str, str] | None = None) -> tuple[int, str, str]:
+async def _fetch_static(
+    url: str, timeout_ms: int, user_agent: str, headers: dict[str, str] | None = None
+) -> tuple[int, str, str]:
     resp = await safe_fetch(
         url,
         timeout_s=timeout_ms / 1000,
@@ -133,17 +136,16 @@ async def _fetch_browser(
     screenshot: bool = False,
     full_page: bool = False,
 ) -> tuple[int, str, str, bytes | None]:
+    headers = validate_headers(headers)
+    validate_user_agent(user_agent)
     pool = get_browser_pool()
     context = await pool.acquire(timeout_ms=timeout_ms)
     try:
         page = await pool.new_page(context, timeout_ms=timeout_ms)
-        # Merge custom headers with the user_agent. User-Agent is set
-        # separately for compatibility; custom headers take precedence.
-        extra_headers = {"User-Agent": user_agent}
-        if headers:
-            extra_headers.update(headers)
-        await page.set_extra_http_headers(extra_headers)
-        await install_browser_ssrf_guard(page)
+        await page.set_extra_http_headers({"User-Agent": user_agent})
+        await install_browser_ssrf_guard(
+            page, initial_url=url, headers=headers, user_agent=user_agent
+        )
         response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         # Allow JS to settle briefly for SPA content.
         with contextlib.suppress(Exception):
@@ -184,11 +186,12 @@ async def scrape(
         render: "auto" (static w/ browser fallback), "static", or "browser".
         user_agent: Outbound User-Agent header used for static and browser fetches.
         full_page: Capture the full scrollable page for "screenshot" (default: viewport).
-        headers: Optional custom HTTP headers to send with the request
-            (e.g., Accept-Language, Authorization). These are merged with
-            the User-Agent header for both static and browser fetches.
+        headers: Bounded custom HTTP headers, scoped to the initial origin.
+            A case-insensitive User-Agent overrides user_agent on that origin.
     """
     t0 = time.perf_counter()
+    headers = validate_headers(headers)
+    validate_user_agent(user_agent)
     timeout_ms = timeout_ms or settings.DEFAULT_TIMEOUT_MS
     extractor = get_content_extractor()
     opts = _options_from(formats, only_main_content)
