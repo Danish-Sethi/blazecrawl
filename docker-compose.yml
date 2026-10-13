@@ -1,7 +1,7 @@
 services:
   api:
     build: .
-    image: blazecrawl-core:0.1.0
+    image: blazecrawl-core:0.2.0
     # Loopback-only by default. To expose remotely, publish explicitly and
     # keep TLS in front, e.g.:
     #   ports: ["8000:8000"]   # behind a reverse proxy with TLS + your own firewalling

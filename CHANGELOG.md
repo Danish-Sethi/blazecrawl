@@ -5,7 +5,20 @@ versioning follows SemVer.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
 ### Added
+- Validated, origin-scoped custom scrape `headers` and per-request `user_agent`.
+  Headers apply only to the initial origin (scheme, hostname, effective port); static
+  redirects permanently drop them on origin change and browser interception scopes
+  redirects/subresources. Names/values, duplicates and transport-managed headers are
+  checked; limits are 32 headers, 128 characters per name, 4096 per value and 8192
+  wire bytes, with User-Agent capped at 200 characters. Cache keys isolate values.
+- Optional `EGRESS_UPSTREAM_PROXY` for static and browser traffic using HTTP(S)
+  CONNECT to locally validated target IP literals. Both endpoint and destination DNS
+  sets are checked on every dial; original Host/SNI/TLS verification remain intact.
+  Credentials are used only for CONNECT and redacted from errors. No SOCKS or remote
+  target-DNS support; a proxy is still a trusted operator, not an isolation boundary.
 - Shared crawl scheduling safeguards: per-host concurrency, token-bucket admissions and robots
   crawl-delay; bounded 429/5xx retries with Retry-After support and a finite manager-wide
   page-fetch-attempt budget. Retries preserve the checkpoint frontier; cancellation releases
@@ -16,8 +29,8 @@ versioning follows SemVer.
 - `SCREENSHOT_MAX_BYTES` setting (default 5 MB of raw PNG bytes). Captures over the cap are rejected with
   HTTP 413 (`error: "screenshot_too_large"`) and never return partial data. The cap also applies to cached
   screenshots. The setting must be a positive integer.
-- `blazecrawl scrape --formats screenshot --output page.png` (with `--full-page` for the whole page) in the
-  source-checkout CLI.
+- `blazecrawl scrape --formats screenshot --output page.png` (with `--full-page` for the whole page).
+- CLI Markdown `--output` and `doctor` readiness/key/Chromium diagnostics.
 - Crawl jobs checkpoint their frontier, visited URLs, results, and counters after every page. With
   `REDIS_URL` set and reachable at startup, checkpoints go to Redis, one transaction each; otherwise they stay
   in memory. Unfinished crawls resume after a restart, so `GET /v1/crawl/{job_id}` keeps working and completed
@@ -31,6 +44,17 @@ versioning follows SemVer.
   fails with actionable installation instructions.
 
 ### Changed
+- All five distributions are versioned together at 0.2.0. Runtime, CLI, health and
+  MCP initialization version reporting derive from installed package metadata.
+- Canonical repository/package links now use `Danish-Sethi/blazecrawl`; the release
+  image moves to `ghcr.io/danish-sethi/blazecrawl` (Linux amd64 only). PyPI/npm names
+  are unchanged; the old personal GHCR image is not updated.
+- Clean-installed wheel/npm-pack and container behavior checks gate every publisher.
+  Read-only PR/manual candidates and post-publication public-registry checks reuse
+  those checks. PyPI/npm publication stays tag-only and OIDC-only.
+- First-run instructions use authenticated, loopback-only Docker with persistent
+  state; native Windows requires an explicit random key. Five-person trial protocol
+  is provided without participant results.
 - A normal shutdown suspends running crawls without marking them cancelled; they resume on the next startup.
   Only an explicit cancel is terminal.
 - `GET /v1/crawl/{job_id}` also returns `max_depth`, `created_at`, and `finished_at`.
@@ -39,6 +63,21 @@ versioning follows SemVer.
 - Browser-pool context/semaphore accounting on failed startup, restart,
   acquisition failure, and cancellation; page-creation failures are counted
   and release cleanup completes before a cancelled lease is returned.
+
+### Compatibility and limits
+- New request fields are additive to v0.1.2; older servers do not accept them.
+  `render: "static"` with screenshot is rejected (422), not silently upgraded.
+  PNGs exceeding the default 5 MB raw-byte cap fail (413), including cache hits.
+- Crawl persistence is single-process restart recovery, **not** a distributed queue.
+  Memory-only jobs disappear on restart. Redis/disk writes contain page data and
+  must be protected. Unreachable Redis logs a warning and selects disk (if enabled)
+  or memory; checkpoint write failures are logged, not a durability guarantee.
+- The crawl governor is process-wide, not replica-wide or a network request quota.
+  Direct scrape/map, robots fetches, redirects and subresources are outside its
+  admission budget. Counters/delays reset on restart; budget exhaustion fails jobs.
+- Auth, robots enforcement, SSRF/private-address blocking, redirect validation and
+  pinned connections remain enabled. Browser headers fail closed without Chromium
+  interception support. Metrics are opt-in and unauthenticated: restrict access.
 
 ## [0.1.2] — Distribution integrity repair
 

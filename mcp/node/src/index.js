@@ -8,6 +8,9 @@
  *   BLAZECRAWL_API_KEY
  */
 
+import { readFileSync } from "node:fs";
+
+const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const API_KEY = process.env.BLAZECRAWL_API_KEY || null;
 const BASE = (process.env.BLAZECRAWL_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
@@ -139,7 +142,7 @@ async function handle(msg) {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "blazecrawl", version: "0.1.0" },
+        serverInfo: { name: "blazecrawl", version: VERSION },
       },
     });
     return;

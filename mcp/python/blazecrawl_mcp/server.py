@@ -9,6 +9,7 @@ Exposes scrape / map / crawl as MCP tools over stdio. Configure with:
 from __future__ import annotations
 
 import os
+from importlib.metadata import version
 
 import httpx
 from mcp.server import Server
@@ -18,7 +19,7 @@ from mcp.types import TextContent, Tool
 API_KEY = os.environ.get("BLAZECRAWL_API_KEY")
 API_BASE_URL = os.environ.get("BLAZECRAWL_API_URL", "http://127.0.0.1:8000").rstrip("/")
 
-server = Server("blazecrawl")
+server = Server("blazecrawl", version=version("blazecrawl-mcp"))
 
 
 def _headers() -> dict:

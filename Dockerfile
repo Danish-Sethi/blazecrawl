@@ -19,7 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install the package with optional Redis cache + structured-data extras.
 COPY pyproject.toml README.md LICENSE ./
 COPY blazecrawl_core ./blazecrawl_core
-RUN pip install -e ".[redis,structured]"
+RUN pip install ".[redis,structured]" \
+    && rm -rf blazecrawl_core
 
 # Install Chromium + its OS dependencies for Playwright into a shared location
 # readable by the non-root runtime user.
@@ -34,7 +35,8 @@ RUN useradd --create-home --uid 10001 blazecrawl \
 USER blazecrawl
 
 ENV BLAZECRAWL_HOST=0.0.0.0 \
-    BLAZECRAWL_PORT=8000
+    BLAZECRAWL_PORT=8000 \
+    BLAZECRAWL_STATE_DIR=/data/blazecrawl
 
 EXPOSE 8000
 

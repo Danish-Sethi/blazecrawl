@@ -1,11 +1,22 @@
 name: Release
 
-# A release is only published from a reviewed tag on main. Ordinary CI remains
-# read-only and never receives registry publication permissions.
+# PRs/manual candidates are read-only. Publication is possible only on a reviewed tag.
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Read-only check: build candidate or check already-public registries"
+        type: choice
+        options: [candidate, published]
+        default: candidate
+        required: true
+      version:
+        description: "Exact X.Y.Z matching this ref's five manifests and locks"
+        default: "0.2.0"
+        required: true
 
 permissions:
   contents: read
@@ -16,7 +27,7 @@ env:
 
 jobs:
   verify-release:
-    name: Verify release tag and versions
+    name: Verify release versions and tag ancestry
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -25,112 +36,54 @@ jobs:
         with:
           fetch-depth: 0
       - id: version
-        name: Verify tag targets main and matches all package versions
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "Tag must be vX.Y.Z" >&2; exit 1 ;; esac
-          version="${tag#v}"
-          git fetch origin main --depth=1
-          git merge-base --is-ancestor "$GITHUB_SHA" "origin/main"
-          python - "$version" <<'PY'
-          import json
-          import sys
-          import tomllib
-          from pathlib import Path
-
-          expected = sys.argv[1]
-          versions = {}
-
-          # Python package manifests (pyproject.toml project.version).
-          for path in [Path("pyproject.toml"), Path("sdks/python/pyproject.toml"), Path("mcp/python/pyproject.toml")]:
-              versions[str(path)] = tomllib.loads(path.read_text())["project"]["version"]
-
-          # Node package manifests (package.json version).
-          for path in [Path("sdks/node/package.json"), Path("mcp/node/package.json")]:
-              versions[str(path)] = json.loads(path.read_text())["version"]
-
-          # Node lockfiles: BOTH the lockfile root version and the
-          # packages[""] (package-root) version must match the release. This
-          # catches the v0.1.1 lockfile drift.
-          for path in [Path("sdks/node/package-lock.json"), Path("mcp/node/package-lock.json")]:
-              lock = json.loads(path.read_text())
-              versions[f"{path} (root)"] = lock["version"]
-              versions[f"{path} (packages[''])"] = lock["packages"][""]["version"]
-
-          mismatch = {path: v for path, v in versions.items() if v != expected}
-          if mismatch:
-              raise SystemExit(f"tag version {expected!r} does not match: {mismatch}")
-          print(f"all {len(versions)} manifest/lockfile versions match {expected}")
-          PY
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            version="${GITHUB_REF_NAME#v}"
+            git fetch origin main
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          else
+            version="${REQUESTED_VERSION:-$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')}"
+          fi
+          python scripts/release/versions.py "$version"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
-  build-python:
-    name: Build and test Python distributions
+  candidate:
+    name: Clean candidate (all five packages + Linux amd64 image)
+    if: ${{ inputs.mode != 'published' }}
     needs: verify-release
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv python install ${{ env.PYTHON_VERSION }}
-      - name: Build, validate, and smoke-test exact Python artifacts
-        shell: bash
-        env:
-          EXPECTED_VERSION: ${{ needs.verify-release.outputs.version }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Check release runtime and Node tests
         run: |
-          set -euo pipefail
-          for package in . sdks/python mcp/python; do
-            (cd "$package" && uv build && uvx twine check dist/*)
-          done
-          # Core: install the exact built wheel into a clean venv and assert the
-          # RUNTIME version matches the release version. This is the regression
-          # guard for the v0.1.1 defect (installed 0.1.1 wheel reported 0.1.0).
-          uv venv --seed /tmp/blazecrawl-core-venv
-          /tmp/blazecrawl-core-venv/bin/pip install ./dist/*.whl
-          /tmp/blazecrawl-core-venv/bin/python - <<'PY'
-          import os
-          import blazecrawl_core
-          expected = os.environ["EXPECTED_VERSION"]
-          assert blazecrawl_core.__version__ == expected, f"core runtime {blazecrawl_core.__version__} != {expected}"
-          print("core runtime version OK:", blazecrawl_core.__version__)
-          PY
-          # CLI --version must report the release version.
-          cli_version="$(/tmp/blazecrawl-core-venv/bin/blazecrawl --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-          [ "$cli_version" = "$EXPECTED_VERSION" ] || { echo "blazecrawl --version reported $cli_version, expected $EXPECTED_VERSION" >&2; exit 1; }
-          echo "blazecrawl --version OK: $cli_version"
-          # SDK runtime version.
-          uv venv --seed /tmp/blazecrawl-sdk-venv
-          /tmp/blazecrawl-sdk-venv/bin/pip install ./sdks/python/dist/*.whl
-          /tmp/blazecrawl-sdk-venv/bin/python - <<'PY'
-          import os
-          import blazecrawl
-          expected = os.environ["EXPECTED_VERSION"]
-          assert blazecrawl.__version__ == expected, f"sdk runtime {blazecrawl.__version__} != {expected}"
-          print("sdk runtime version OK:", blazecrawl.__version__)
-          PY
-          # MCP CLI.
-          uv venv --seed /tmp/blazecrawl-mcp-venv
-          /tmp/blazecrawl-mcp-venv/bin/pip install ./mcp/python/dist/*.whl
-          /tmp/blazecrawl-mcp-venv/bin/blazecrawl-mcp --help >/dev/null
-          echo "mcp --help OK"
-          # Best-effort /health version proof from the installed artifact. The
-          # API warms a Playwright browser pool on startup, which needs browser
-          # binaries; install them and verify GET /health reports the release
-          # version. This closes the loop on the v0.1.1 /health=0.1.0 defect.
-          /tmp/blazecrawl-core-venv/bin/playwright install --with-deps chromium >/dev/null 2>&1 || /tmp/blazecrawl-core-venv/bin/playwright install chromium >/dev/null
-          BLAZECRAWL_PORT=18099 /tmp/blazecrawl-core-venv/bin/blazecrawl-server >/tmp/blazecrawl-server.log 2>&1 &
-          server_pid=$!
-          trap 'kill $server_pid 2>/dev/null || true' EXIT
-          health_version=""
-          for _ in $(seq 1 60); do
-            health_version="$(curl -fsS http://127.0.0.1:18099/health 2>/dev/null | python -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
-            [ -n "$health_version" ] && break
-            sleep 1
-          done
-          kill $server_pid 2>/dev/null || true
-          [ "$health_version" = "$EXPECTED_VERSION" ] || { echo "/health reported version '$health_version', expected '$EXPECTED_VERSION'"; cat /tmp/blazecrawl-server.log; exit 1; }
-          echo "/health version OK: $health_version"
+          node --version
+          npm --version
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 24) process.exit(1)'
+          npm --prefix sdks/node test
+          node --test mcp/node/test/*.test.mjs
+      - name: Build and exercise exact installed artifacts
+        env:
+          VERSION: ${{ needs.verify-release.outputs.version }}
+        run: bash scripts/release/artifacts.sh built "$VERSION"
+      - name: Inventory the tested image
+        uses: anchore/sbom-action@3f46e6c23709f2b35c9c5182affe8ef3d6e32b71
+        with:
+          image: blazecrawl-candidate:${{ needs.verify-release.outputs.version }}
+          format: spdx-json
+          output-file: release-image.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-distributions
@@ -140,48 +93,6 @@ jobs:
             mcp/python/dist/*
           if-no-files-found: error
           retention-days: 7
-
-  build-node:
-    name: Build and test Node distributions
-    needs: verify-release
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: https://registry.npmjs.org
-      - name: Verify npm trusted-publishing runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --version
-          npm --version
-          node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && (minor < 14 || (minor === 14 && patch < 0)))) process.exit(1)'
-          npm_version="$(npm --version)"
-          node - "$npm_version" <<'NODE'
-          const [major, minor, patch] = process.argv[2].split(".").map(Number);
-          if (![major, minor, patch].every(Number.isInteger) || major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
-            throw new Error(`npm ${process.argv[2]} is below required 11.5.1`);
-          }
-          NODE
-      - name: Test, pack, inspect, and install exact npm artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          for package in sdks/node mcp/node; do
-            (cd "$package" && npm test --if-present && npm pack --json > pack.json)
-            node - "$package/pack.json" <<'NODE'
-          const fs = require("fs");
-          const pack = JSON.parse(fs.readFileSync(process.argv[2], "utf8"))[0];
-          const forbidden = /(^|\/)(\.env|\.npmrc|\.pypirc|id_rsa|.*\.(pem|key|crt))$/;
-          if (pack.files.some(({path}) => forbidden.test(path))) throw new Error(`forbidden tarball file: ${pack.files.map(x => x.path).find(p => forbidden.test(p))}`);
-          console.log(`${pack.name}@${pack.version}: ${pack.files.map(x => x.path).join(", ")}`);
-          NODE
-          done
-          mkdir /tmp/blazecrawl-npm-smoke && cd /tmp/blazecrawl-npm-smoke && npm init -y && npm install "$GITHUB_WORKSPACE/sdks/node/$(node -p "require('$GITHUB_WORKSPACE/sdks/node/pack.json')[0].filename")" "$GITHUB_WORKSPACE/mcp/node/$(node -p "require('$GITHUB_WORKSPACE/mcp/node/pack.json')[0].filename")"
-          node --input-type=module -e 'import { BlazeCrawl } from "@blazecrawl/sdk"; if (typeof BlazeCrawl !== "function") process.exit(1)'
-          ./node_modules/.bin/blazecrawl-mcp --help >/dev/null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: node-distributions
@@ -190,10 +101,20 @@ jobs:
             mcp/node/*.tgz
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tested-image
+          path: |
+            release-image.tar
+            release-image.spdx.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
 
   publish-pypi-core:
     name: Publish blazecrawl-core to PyPI
-    needs: [verify-release, build-python]
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [verify-release, candidate]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -204,15 +125,14 @@ jobs:
         with:
           name: python-distributions
           path: artifacts
-      - name: Publish blazecrawl-core
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: artifacts/dist
-          verbose: true
 
   publish-pypi-sdk:
     name: Publish blazecrawl SDK to PyPI
-    needs: [verify-release, build-python]
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [verify-release, candidate]
     runs-on: ubuntu-24.04
     environment: release-pypi-blazecrawl
     permissions:
@@ -223,15 +143,14 @@ jobs:
         with:
           name: python-distributions
           path: artifacts
-      - name: Publish blazecrawl SDK
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: artifacts/sdks/python/dist
-          verbose: true
 
   publish-pypi-mcp:
     name: Publish blazecrawl MCP to PyPI
-    needs: [verify-release, build-python]
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [verify-release, candidate]
     runs-on: ubuntu-24.04
     environment: release-pypi-mcp
     permissions:
@@ -242,15 +161,14 @@ jobs:
         with:
           name: python-distributions
           path: artifacts
-      - name: Publish blazecrawl MCP
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: artifacts/mcp/python/dist
-          verbose: true
 
   publish-npm:
-    name: Publish Node distributions to npm
-    needs: [verify-release, build-node]
+    name: Publish exact npm packs (OIDC only, candidate dist-tag)
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [verify-release, candidate]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -265,63 +183,24 @@ jobs:
         with:
           name: node-distributions
           path: artifacts
-      - name: Verify npm release runtime
-        shell: bash
+      - name: Publish with provenance, no token fallback
         run: |
           set -euo pipefail
           node --version
           npm --version
-          node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && (minor < 14 || (minor === 14 && patch < 0)))) process.exit(1)'
-          npm_version="$(npm --version)"
-          node - "$npm_version" <<'NODE'
+          node - "$(npm --version)" <<'NODE'
           const [major, minor, patch] = process.argv[2].split(".").map(Number);
-          if (![major, minor, patch].every(Number.isInteger) || major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
-            throw new Error(`npm ${process.argv[2]} is below required 11.5.1`);
+          if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+            throw new Error("npm Trusted Publishing requires npm >=11.5.1");
           }
           NODE
-      # npm publication is OIDC Trusted Publishing ONLY. There is no token
-      # fallback: no NODE_AUTH_TOKEN is injected. The job holds id-token: write
-      # so npm can authenticate via GitHub OIDC once Trusted Publishers are
-      # configured on the packages. For a version already published by the
-      # one-time interactive owner bootstrap (e.g. v0.1.2), this job verifies
-      # the exact bytes (SHA-1 vs dist.shasum) and skips republish; it never
-      # overwrites an immutable version. If a version is absent and Trusted
-      # Publishing is not yet configured, npm fails closed.
-      - name: Publish or verify exact npm artifacts with provenance
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "npm authentication: OIDC Trusted Publishing (no token fallback)"
-          publish_or_verify() {
-            local directory="$1"
-            local tarball
-            tarball="$(printf '%s\n' "$directory"/*.tgz)"
-            local name version sha1 remote_version remote_sha1 metadata
-            metadata="$(tar -xOf "$tarball" package/package.json)"
-            name="$(node -e 'let d=""; process.stdin.on("data", c => d += c).on("end", () => process.stdout.write(JSON.parse(d).name))' <<< "$metadata")"
-            version="$(node -e 'let d=""; process.stdin.on("data", c => d += c).on("end", () => process.stdout.write(JSON.parse(d).version))' <<< "$metadata")"
-            sha1="$(sha1sum "$tarball" | cut -d' ' -f1)"
-            remote_version="$(npm view "$name@$version" version 2>/dev/null || true)"
-            if [ -z "$remote_version" ]; then
-              # Absent: publish via OIDC Trusted Publishing (id-token). Fails
-              # closed if Trusted Publishers are not configured for the package.
-              npm publish "$tarball" --access public --provenance
-              return
-            fi
-            remote_sha1="$(npm view "$name@$version" dist.shasum 2>/dev/null || true)"
-            [ "$remote_version" = "$version" ]
-            [ "$remote_sha1" = "$sha1" ] || {
-              printf 'Refusing release: %s@%s already exists with a different tarball SHA-1\n' "$name" "$version" >&2
-              exit 1
-            }
-            printf 'already published - exact reviewed bytes verified: %s@%s (sha1 %s)\n' "$name" "$version" "$sha1"
-          }
-          publish_or_verify artifacts/sdks/node
-          publish_or_verify artifacts/mcp/node
+          npm publish artifacts/sdks/node/*.tgz --access public --provenance --tag candidate
+          npm publish artifacts/mcp/node/*.tgz --access public --provenance --tag candidate
 
   publish-ghcr:
-    name: Publish Linux amd64 image to GHCR
-    needs: verify-release
+    name: Push exact tested image (version tag only)
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [verify-release, candidate]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -330,30 +209,55 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tested-image
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+      - name: Load, tag and push without rebuilding
+        id: image
+        env:
+          VERSION: ${{ needs.verify-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker load -i release-image.tar
+          docker tag "blazecrawl-candidate:$VERSION" "ghcr.io/danish-sethi/blazecrawl:$VERSION"
+          docker push "ghcr.io/danish-sethi/blazecrawl:$VERSION"
+          reference="$(docker image inspect "ghcr.io/danish-sethi/blazecrawl:$VERSION" --format '{{index .RepoDigests 0}}')"
+          printf 'digest=%s\n' "${reference##*@}" >> "$GITHUB_OUTPUT"
+      - name: Attest tested image provenance
+        uses: actions/attest-build-provenance@9d57eef8c06cd9d6b433effeeb7a6a77b3ff94ad
         with:
-          images: ghcr.io/danishxsethi/blazecrawl
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-          labels: |
-            org.opencontainers.image.source=https://github.com/danishxsethi/blazecrawl
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.verify-release.outputs.version }}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+          subject-name: ghcr.io/danish-sethi/blazecrawl
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+      - name: Attest tested image SBOM
+        uses: actions/attest-sbom@4c8abdcbea4a6b66f70fd1169e70af4bf5b13701
         with:
-          context: .
-          push: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: mode=max
-          sbom: true
+          subject-name: ghcr.io/danish-sethi/blazecrawl
+          subject-digest: ${{ steps.image.outputs.digest }}
+          sbom-path: release-image.spdx.json
+          push-to-registry: true
+
+  published:
+    name: Anonymous public-registry behavior checks
+    if: ${{ always() && needs.verify-release.result == 'success' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'published') || (github.event_name == 'push' && needs.publish-pypi-core.result == 'success' && needs.publish-pypi-sdk.result == 'success' && needs.publish-pypi-mcp.result == 'success' && needs.publish-npm.result == 'success' && needs.publish-ghcr.result == 'success')) }}
+    needs: [verify-release, publish-pypi-core, publish-pypi-sdk, publish-pypi-mcp, publish-npm, publish-ghcr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install only public packages and anonymously pull versioned image
+        env:
+          VERSION: ${{ needs.verify-release.outputs.version }}
+        run: bash scripts/release/artifacts.sh registry "$VERSION"
+      # No latest mutation or release announcement. The coordinator does that
+      # only after this job and independent public-registry evidence are green.

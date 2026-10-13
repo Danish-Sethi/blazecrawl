@@ -1,14 +1,15 @@
 # Roadmap
 
-BlazeCrawl Core is `v0.1.2`. This is a directional roadmap, not a commitment;
+BlazeCrawl Core is preparing `v0.2.0` (see [release status](../README.md#quickstart)).
+This is a directional roadmap, not a commitment;
 priorities follow real usage and contributor interest.
 
-## Now (0.1.x)
+## Now (0.2.0 candidate)
 * scrape / crawl / map, Markdown, browser rendering, SSRF hardening
 * Python + Node SDK, CLI, MCP servers, Docker self-host
 * hardening, tests, docs, contributor onboarding
 
-## Implemented on main (unreleased)
+## Included in 0.2.0
 * validated, origin-scoped custom scrape headers and Python/Node examples
 * screenshot API and CLI output, full-page capture, and a configurable PNG cap
 * optional browser-pool Prometheus metrics, disabled by default
@@ -16,7 +17,7 @@ priorities follow real usage and contributor interest.
 * shared per-host crawl-delay/concurrency and token buckets, bounded HTTP backoff, and a process-wide fetch-attempt budget
 * optional operator-supplied upstream proxies with locally validated-IP CONNECT for static and browser fetches
 
-## Next (0.2)
+## Next (future minor releases)
 * pluggable search-provider interface (community adapters)
 * pluggable LLM-extraction provider interface
 * Redis-backed distributed crawl queue and multi-worker coordination (distinct from single-process job persistence)

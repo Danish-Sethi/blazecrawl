@@ -1,15 +1,15 @@
 {
   "name": "@blazecrawl/sdk",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Node.js SDK for BlazeCrawl Core (self-hosted web-data engine).",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danishxsethi/blazecrawl.git"
+    "url": "git+https://github.com/Danish-Sethi/blazecrawl.git"
   },
-  "homepage": "https://github.com/danishxsethi/blazecrawl#readme",
+  "homepage": "https://github.com/Danish-Sethi/blazecrawl#readme",
   "bugs": {
-    "url": "https://github.com/danishxsethi/blazecrawl/issues"
+    "url": "https://github.com/Danish-Sethi/blazecrawl/issues"
   },
   "publishConfig": {
     "access": "public",
@@ -24,8 +24,18 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test"
   },
-  "keywords": ["web-scraping", "crawler", "markdown", "llm", "sdk", "mcp", "self-hosted"],
-  "files": ["src"]
+  "keywords": [
+    "web-scraping",
+    "crawler",
+    "markdown",
+    "llm",
+    "sdk",
+    "mcp",
+    "self-hosted"
+  ],
+  "files": [
+    "src"
+  ]
 }
