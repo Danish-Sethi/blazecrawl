@@ -76,6 +76,7 @@ def web(monkeypatch):
         return True
 
     monkeypatch.setattr(crawler.robots, "is_allowed", allowed)
+    monkeypatch.setattr(crawler.robots, "get_crawl_delay", AsyncMock(return_value=None))
     return fake
 
 

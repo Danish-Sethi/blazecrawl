@@ -47,6 +47,7 @@ def _install_fakes(mode: str, fetch_log: Path) -> None:
     crawler.validate_and_pin = AsyncMock(return_value=None)
     ssrf.validate_and_pin = AsyncMock(return_value=None)
     crawler.robots.is_allowed = allowed
+    crawler.robots.get_crawl_delay = AsyncMock(return_value=None)
 
 
 async def _main() -> None:

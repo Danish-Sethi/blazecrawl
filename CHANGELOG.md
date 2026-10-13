@@ -6,6 +6,10 @@ versioning follows SemVer.
 ## [Unreleased]
 
 ### Added
+- Shared crawl scheduling safeguards: per-host concurrency, token-bucket admissions and robots
+  crawl-delay; bounded 429/5xx retries with Retry-After support and a finite manager-wide
+  page-fetch-attempt budget. Retries preserve the checkpoint frontier; cancellation releases
+  permits, and exhausted budgets fail jobs explicitly. Settings and restart scope are documented. (#27, #32)
 - Crawl jobs checkpoint their frontier, visited URLs, results, and counters after every page. With
   `REDIS_URL` set and reachable at startup, checkpoints go to Redis, one transaction each; otherwise they stay
   in memory. Unfinished crawls resume after a restart, so `GET /v1/crawl/{job_id}` keeps working and completed

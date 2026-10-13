@@ -168,6 +168,51 @@ On Linux, `playwright install --with-deps chromium` also installs the browser's 
 The server defaults to `http://127.0.0.1:8000`. If you did not supply your own key, copy the first-run
 key; then make the same authenticated request from another terminal. The CLI is included in `blazecrawl-core`.
 
+## Crawl scheduling safeguards
+
+All jobs in the API process share one `CrawlManager` governor. Each hostname (including
+requests using different schemes/ports) has one concurrency limit and token bucket. The
+strongest robots `crawl-delay` observed for that hostname is also enforced between page
+attempt start times; robots disallow rules and SSRF checks remain mandatory.
+
+| Environment variable | Default | Units / scope |
+|---|---:|---|
+| `CRAWL_MAX_CONCURRENCY` | `4` | Active page-fetch attempts across all hosts/jobs |
+| `CRAWL_HOST_CONCURRENCY` | `2` | Active page-fetch attempts per hostname, shared across jobs |
+| `CRAWL_HOST_RATE` | `1.0` | Tokens refilled per second per hostname; one token per attempt |
+| `CRAWL_HOST_BURST` | `2` | Maximum stored tokens; buckets start full |
+| `CRAWL_FETCH_BUDGET` | `10000` | Total admitted page-fetch attempts per manager lifetime, across jobs |
+| `CRAWL_PAGE_ATTEMPTS` | `3` | Maximum static/browser attempts for one page, including retries/fallback |
+| `CRAWL_PAGE_DEADLINE_SECONDS` | `120.0` | Seconds after robots checks, including admission waits, fetches and retries |
+| `CRAWL_BACKOFF_SECONDS` | `1.0` | Initial 429/5xx retry delay in seconds, doubled on consecutive retries |
+| `CRAWL_BACKOFF_MAX_SECONDS` | `30.0` | Maximum exponential delay in seconds (not a cap on valid `Retry-After`) |
+
+These settings must be positive finite numbers (counts must be integers). Invalid configuration
+fails explicitly at startup. A page-fetch attempt means one static HTTP fetch or one browser
+navigation initiated by the crawler. A browser fallback is another attempt. HTTP redirects inside
+that fetch, robots.txt fetches, and browser subresources are **not** separate budgeted attempts;
+this is crawler admission governance, not a network-layer request quota. Direct scrape/map calls
+do not use this governor.
+
+Rate/robots/backoff waits do not spend budget or hold fetch permits. An admitted attempt spends budget even if
+it fails or is cancelled; retries spend budget too. Exhaustion fails the job explicitly with
+`status: "failed"` and an `error` containing `budget exhausted`, rather than reporting success.
+The limit is process-wide through the API singleton, not shared between processes or replicas.
+After exhaustion, new jobs cannot fetch pages until the manager/process is restarted.
+
+429 and 5xx responses defer all subsequent admissions to that hostname. Valid `Retry-After`
+integer seconds or HTTP dates are honored as a minimum delay; invalid headers use exponential
+backoff. If the delay cannot fit the page deadline, the page fails without an early retry.
+Retry/robots/bucket waits do not block unrelated hosts. Cancellation releases both waiting and
+active permits promptly. Exhausted page retries are terminal page failures (`pages_failed`),
+not successful pages; other frontier pages may still be processed.
+
+Governor buckets, delays, attempt counters and per-page retry deadlines are in memory and reset
+when a manager restarts, including when restoring Redis/disk checkpoints. The current page stays
+in the persisted frontier throughout retries and is marked visited only after success or a terminal
+outcome. After a crash/shutdown, that in-flight page is retried with a fresh allowance; already
+checkpointed pages are not fetched again. Explicitly cancelled or budget-failed jobs stay terminal.
+
 ## Integrations
 
 All clients below connect to **your running BlazeCrawl API**. They do not start a server.
