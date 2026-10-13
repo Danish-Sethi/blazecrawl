@@ -19,14 +19,22 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urldefrag, urlsplit
 
 from blazecrawl_core.config import settings
 from blazecrawl_core.engine import robots
+from blazecrawl_core.engine.governor import (
+    CrawlBudgetExceeded,
+    CrawlFetchDenied,
+    CrawlGovernor,
+    retry_after_seconds,
+)
 from blazecrawl_core.engine.job_store import JobStore, MemoryJobStore, build_job_store
-from blazecrawl_core.engine.scraper import scrape
+from blazecrawl_core.engine.scraper import ScrapeResult, scrape
 from blazecrawl_core.logging import get_logger
 from blazecrawl_core.network.ssrf import SSRFValidationError, validate_and_pin
 
@@ -178,6 +186,7 @@ class CrawlManager:
         self._jobs: dict[str, CrawlJobState] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._sem = asyncio.Semaphore(settings.CRAWL_MAX_CONCURRENCY)
+        self._governor = CrawlGovernor(self._sem)
 
     async def restore(self) -> None:
         """Load persisted jobs and resume the ones that were queued or running."""
@@ -290,21 +299,25 @@ class CrawlManager:
         seed_host = urlsplit(job.seed).netloc
         if job.frontier is None:
             job.frontier = [(job.seed, 0)]
+            await self._checkpoint(job)
         frontier = job.frontier
         visited = job.visited
 
         while frontier and job.pages_crawled < job.max_pages:
-            url, depth = frontier.pop(0)
+            url, depth = frontier[0]
             url = urldefrag(url)[0]
             if url in visited or depth > job.max_depth:
+                frontier.pop(0)
                 continue
-            visited.add(url)
 
             # SSRF validation (defense-in-depth; seed validated at enqueue).
             try:
                 await validate_and_pin(url)
             except SSRFValidationError:
                 logger.warning("Crawl skipping SSRF-blocked URL", url=url)
+                visited.add(url)
+                frontier.pop(0)
+                await self._checkpoint(job)
                 continue
 
             # robots.txt
@@ -312,44 +325,97 @@ class CrawlManager:
                 url, user_agent=job.user_agent
             ):
                 logger.info("Crawl skipping robots-disallowed URL", url=url)
+                visited.add(url)
+                frontier.pop(0)
+                await self._checkpoint(job)
                 continue
 
-            async with self._sem:
-                try:
-                    result = await scrape(
-                        url,
-                        formats=["markdown", "links"],
-                        render="auto",
-                        user_agent=job.user_agent,
+            try:
+                delay = await robots.get_crawl_delay(url, user_agent=job.user_agent)
+                result = await self._fetch_page(job, url, delay)
+                job.pages_crawled += 1
+                job.pages.append(
+                    {
+                        "url": result.final_url,
+                        "status_code": result.status_code,
+                        "title": result.metadata.get("title"),
+                        "markdown": result.markdown,
+                    }
+                )
+                if depth < job.max_depth:
+                    for link in result.links or []:
+                        lu = link.get("url")
+                        if not lu:
+                            continue
+                        lu = urldefrag(lu)[0]
+                        if lu in visited:
+                            continue
+                        if urlsplit(lu).netloc != seed_host:
+                            continue
+                        if urlsplit(lu).scheme not in ("http", "https"):
+                            continue
+                        frontier.append((lu, depth + 1))
+            except CrawlBudgetExceeded:
+                raise
+            except SSRFValidationError:
+                logger.warning("Crawl skipping SSRF-blocked URL", url=url)
+            except Exception as e:
+                job.pages_failed += 1
+                logger.warning("Crawl page failed", url=url, error=str(e))
+            visited.add(url)
+            frontier.pop(0)
+            await self._checkpoint(job)
+
+    async def _fetch_page(
+        self, job: CrawlJobState, url: str, crawl_delay: float | None
+    ) -> ScrapeResult:
+        governor = self._governor
+        config = governor.config
+        deadline = governor.clock() + config.CRAWL_PAGE_DEADLINE_SECONDS
+        attempts = 0
+        backoff = min(config.CRAWL_BACKOFF_SECONDS, config.CRAWL_BACKOFF_MAX_SECONDS)
+
+        @asynccontextmanager
+        async def admission() -> AsyncIterator[None]:
+            nonlocal attempts
+            if attempts >= config.CRAWL_PAGE_ATTEMPTS:
+                raise CrawlFetchDenied("Crawl page-fetch attempt limit exhausted")
+            async with governor.reserve(url, crawl_delay, deadline=deadline):
+                attempts += 1
+                yield
+
+        # The real asyncio deadline also bounds slow network/renderer calls; monotonic
+        # checks cover injected clocks and prevent Retry-After from extending it.
+        async with asyncio.timeout(config.CRAWL_PAGE_DEADLINE_SECONDS):
+            while True:
+                if governor.clock() >= deadline:
+                    raise CrawlFetchDenied("Crawl page deadline exhausted")
+                result = await scrape(
+                    url,
+                    formats=["markdown", "links"],
+                    render="auto",
+                    user_agent=job.user_agent,
+                    fetch_context=admission,
+                )
+                if governor.clock() >= deadline:
+                    raise CrawlFetchDenied("Crawl page deadline exhausted")
+                if result.status_code != 429 and not 500 <= result.status_code <= 599:
+                    return result
+                retry_after = retry_after_seconds(result.retry_after, governor.wall_clock())
+                wait = max(backoff, retry_after or 0.0)
+                governor.defer(url, wait)
+                if attempts >= config.CRAWL_PAGE_ATTEMPTS:
+                    raise CrawlFetchDenied(
+                        f"HTTP {result.status_code}: crawl page-fetch attempt limit exhausted"
                     )
-                    job.pages_crawled += 1
-                    job.pages.append(
-                        {
-                            "url": result.final_url,
-                            "status_code": result.status_code,
-                            "title": result.metadata.get("title"),
-                            "markdown": result.markdown,
-                        }
+                governor.check_budget()
+                if wait >= deadline - governor.clock():
+                    raise CrawlFetchDenied(
+                        f"HTTP {result.status_code}: crawl page deadline exhausted"
                     )
-                    if depth < job.max_depth:
-                        for link in result.links or []:
-                            lu = link.get("url")
-                            if not lu:
-                                continue
-                            lu = urldefrag(lu)[0]
-                            if lu in visited:
-                                continue
-                            if urlsplit(lu).netloc != seed_host:
-                                continue
-                            if urlsplit(lu).scheme not in ("http", "https"):
-                                continue
-                            frontier.append((lu, depth + 1))
-                except SSRFValidationError:
-                    continue
-                except Exception as e:
-                    job.pages_failed += 1
-                    logger.warning("Crawl page failed", url=url, error=str(e))
-                await self._checkpoint(job)
+                logger.info("Crawl retrying page", url=url, status=result.status_code, delay=wait)
+                await governor.sleep(wait)
+                backoff = min(backoff * 2, config.CRAWL_BACKOFF_MAX_SECONDS)
 
 
 _manager: CrawlManager | None = None
