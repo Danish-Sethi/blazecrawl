@@ -116,7 +116,7 @@ def smoke(args) -> None:
                 "blazecrawl",
             ]
         else:
-            python = str(Path(args.core_python).resolve())
+            python = os.path.abspath(args.core_python)
             bin_dir = Path(python).parent
             cli = [str(bin_dir / ("blazecrawl.exe" if os.name == "nt" else "blazecrawl"))]
             reported = run(
