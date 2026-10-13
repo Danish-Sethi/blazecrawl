@@ -1,4 +1,4 @@
-"""Crawl job persistence: lifecycle snapshots, restart recovery, and polling after restart."""
+"""Crawl checkpoints and resume: lifecycle, shutdown/restart, invalid records, and polling after restart."""
 
 import asyncio
 import json
@@ -10,32 +10,91 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blazecrawl_core.api import main
-from blazecrawl_core.engine import crawler, job_store
+from blazecrawl_core.engine import crawler, job_store, robots
 from blazecrawl_core.engine.crawler import CrawlJobState, CrawlManager
-from blazecrawl_core.engine.job_store import MemoryJobStore, RedisJobStore
+from blazecrawl_core.engine.job_store import DiskJobStore, MemoryJobStore, RedisJobStore
+from blazecrawl_core.network import ssrf
 from tests.fakes import FakeRedis
 
 SEED = "https://example.com/"
-PAGE = {"url": SEED, "status_code": 200, "title": "Example", "markdown": "# Example"}
+A = "https://example.com/a"
+B = "https://example.com/b"
+C = "https://example.com/c"
+D = "https://example.com/d"
+GRAPH = {SEED: [A, B], A: [C], B: [D], C: [], D: []}
+ALL_PAGES = [SEED, A, B, C, D]
+PAGE = {"url": SEED, "status_code": 200, "title": "Home", "markdown": "# Home"}
 
 
-async def _fake_crawl(self, job):
-    job.pages.append(PAGE)
-    job.pages_crawled += 1
+class FakeWeb:
+    """Serves GRAPH. URLs in ``blocked`` stay in flight until the crawl is cancelled."""
+
+    def __init__(self) -> None:
+        self.blocked: set[str] = set()
+        self.started: list[str] = []
+        self.completed: list[str] = []
+
+    async def scrape(self, url, **_kwargs):
+        self.started.append(url)
+        if url in self.blocked:
+            await asyncio.Event().wait()
+        self.completed.append(url)
+        return SimpleNamespace(
+            final_url=url,
+            status_code=200,
+            metadata={"title": url},
+            markdown=f"# {url}",
+            links=[{"url": link} for link in GRAPH[url]],
+        )
 
 
-async def _blocked_crawl(self, job):
-    await asyncio.Event().wait()
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def info(self, msg, **kwargs):
+        pass
+
+    def warning(self, msg, **kwargs):
+        self.warnings.append(msg)
+
+    def error(self, msg, **kwargs):
+        pass
 
 
-async def _settle(manager: CrawlManager, job_id: str) -> None:
-    await asyncio.gather(manager._tasks[job_id], return_exceptions=True)
+@pytest.fixture
+def web(monkeypatch):
+    fake = FakeWeb()
+    monkeypatch.setattr(crawler, "scrape", fake.scrape)
+    monkeypatch.setattr(crawler, "validate_and_pin", AsyncMock(return_value=None))
+    monkeypatch.setattr(ssrf, "validate_and_pin", AsyncMock(return_value=None))
+
+    async def allowed(url, user_agent=robots.DEFAULT_USER_AGENT):
+        return True
+
+    monkeypatch.setattr(crawler.robots, "is_allowed", allowed)
+    return fake
+
+
+@pytest.fixture(params=["memory", "redis", "disk"])
+def store_factory(request, tmp_path):
+    """Return a callable that opens a store over the same backing data (a simulated restart)."""
+    if request.param == "memory":
+        shared = MemoryJobStore()
+        return lambda: shared
+    if request.param == "redis":
+        client = FakeRedis()
+        return lambda: RedisJobStore(client)
+    root = tmp_path / "checkpoints"
+    return lambda: DiskJobStore(root)
 
 
 @pytest.fixture
 def api_env(monkeypatch):
     monkeypatch.setattr(main.settings, "BLAZECRAWL_AUTH_DISABLED", True)
     monkeypatch.setattr(main.settings, "BLAZECRAWL_HOST", "127.0.0.1")
+    monkeypatch.setattr(main.settings, "REDIS_URL", None)
+    monkeypatch.setattr(main.settings, "CRAWL_CHECKPOINTS_ENABLED", False)
     monkeypatch.setattr(
         main,
         "get_browser_pool",
@@ -43,148 +102,305 @@ def api_env(monkeypatch):
     )
     monkeypatch.setattr(crawler, "_manager", None)
     monkeypatch.setattr(job_store, "_CONNECT_RETRY_DELAY_SECONDS", 0)
-    monkeypatch.setattr(main.settings, "REDIS_URL", None)
 
 
-async def test_job_snapshots_follow_lifecycle(monkeypatch):
-    monkeypatch.setattr(CrawlManager, "_crawl", _fake_crawl)
+async def _until(predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition was not reached")
+        await asyncio.sleep(0.005)
+
+
+async def _settle(manager: CrawlManager, job_id: str) -> None:
+    await asyncio.gather(manager._tasks[job_id], return_exceptions=True)
+
+
+async def _stored(store) -> dict:
+    return {state["job_id"]: (state, pages) for state, pages in await store.load_jobs()}
+
+
+def _poll(client: TestClient, job_id: str, done) -> dict:
+    body: dict = {}
+    for _ in range(500):
+        body = client.get(f"/v1/crawl/{job_id}").json()
+        if done(body):
+            return body
+        time.sleep(0.01)
+    raise AssertionError(f"job did not reach the expected state: {body}")
+
+
+async def test_checkpoints_follow_lifecycle(web):
     store = MemoryJobStore()
-    seen: list[str] = []
-    original_save = store.save
+    statuses: list[str] = []
+    commit = store.commit
 
-    async def recording_save(record):
-        seen.append(record["status"])
-        await original_save(record)
+    async def recording_commit(job_id, state, new_pages):
+        statuses.append(state["status"])
+        await commit(job_id, state, new_pages)
 
-    store.save = recording_save
+    store.commit = recording_commit
     manager = CrawlManager(store)
-    job = await manager.create_job(SEED, 1, 0)
+    job = await manager.create_job(SEED, 10, 2)
     await _settle(manager, job.job_id)
 
-    assert seen == ["queued", "running", "completed"]
-    stored = (await store.load_all())[0]
-    assert stored["status"] == "completed"
-    assert stored["pages"] == [PAGE]
-    assert stored["finished_at"] is not None
+    assert statuses[:2] == ["queued", "running"]
+    assert statuses[-1] == "completed"
+    assert web.completed == ALL_PAGES
+    state, pages = (await _stored(store))[job.job_id]
+    assert state["status"] == "completed"
+    assert len(pages) == len(ALL_PAGES)
 
 
-async def test_cancel_is_persisted(monkeypatch):
-    monkeypatch.setattr(CrawlManager, "_crawl", _blocked_crawl)
-    store = MemoryJobStore()
+async def test_shutdown_suspends_and_restart_resumes_without_refetching(store_factory, web):
+    web.blocked = {B}
+    store = store_factory()
     manager = CrawlManager(store)
-    job = await manager.create_job(SEED, 1, 0)
-    await asyncio.sleep(0)  # let the task reach "running"
+    job = await manager.create_job(SEED, 10, 2)
+    await _until(lambda: len(web.completed) == 2)
+    await manager.shutdown()
+
+    state, pages = (await _stored(store))[job.job_id]
+    assert state["status"] == "running"
+    assert state["pages_crawled"] == 2
+    assert state["frontier"] == [[B, 1], [C, 2]]
+
+    web.blocked = set()
+    restarted = CrawlManager(store_factory())
+    await restarted.restore()
+    await _settle(restarted, job.job_id)
+
+    final = restarted.get_job(job.job_id)
+    assert final.status == "completed"
+    assert [page["url"] for page in final.pages] == ALL_PAGES
+    assert web.completed == ALL_PAGES  # no page completed twice
+    assert web.started == [SEED, A, B, B, C, D]  # only the in-flight page was fetched again
+
+
+async def test_user_cancel_stays_cancelled_after_restart(store_factory, web):
+    web.blocked = {B}
+    store = store_factory()
+    manager = CrawlManager(store)
+    job = await manager.create_job(SEED, 10, 2)
+    await _until(lambda: len(web.completed) == 2)
     assert await manager.cancel(job.job_id)
     await _settle(manager, job.job_id)
+    state, _ = (await _stored(store))[job.job_id]
+    assert state["status"] == "cancelled"
 
-    stored = {r["job_id"]: r for r in await store.load_all()}[job.job_id]
-    assert stored["status"] == "cancelled"
-    assert stored["finished_at"] is not None
-
-
-async def test_new_manager_loads_persisted_jobs_and_fails_interrupted_ones():
-    store = MemoryJobStore()
-    await store.save(
-        CrawlJobState(
-            job_id="finished", seed=SEED, status="completed", pages=[PAGE], pages_crawled=1
-        ).to_dict()
-    )
-    await store.save(CrawlJobState(job_id="queued", seed=SEED).to_dict())
-    await store.save(CrawlJobState(job_id="running", seed=SEED, status="running").to_dict())
-
-    restarted = CrawlManager(store)
+    restarted = CrawlManager(store_factory())
     await restarted.restore()
-
-    finished = restarted.get_job("finished")
-    assert finished.status == "completed"
-    assert finished.pages == [PAGE]
-    for job_id in ("queued", "running"):
-        job = restarted.get_job(job_id)
-        assert job.status == "failed"
-        assert job.error == "interrupted by restart"
-        assert job.finished_at is not None
-    stored = {r["job_id"]: r["status"] for r in await store.load_all()}
-    assert stored == {"finished": "completed", "queued": "failed", "running": "failed"}
+    assert restarted.get_job(job.job_id).status == "cancelled"
+    assert job.job_id not in restarted._tasks
+    started = list(web.started)
+    await asyncio.sleep(0.02)
+    assert web.started == started
 
 
-async def test_redis_jobs_survive_manager_restart(monkeypatch):
-    monkeypatch.setattr(CrawlManager, "_crawl", _fake_crawl)
-    client = FakeRedis()
-    first = CrawlManager(RedisJobStore(client))
-    job = await first.create_job(SEED, 1, 0)
-    await _settle(first, job.job_id)
-
-    restarted = CrawlManager(RedisJobStore(client))
-    await restarted.restore()
-
-    restored = restarted.get_job(job.job_id)
-    assert restored is not None
-    assert restored.to_dict() == first.get_job(job.job_id).to_dict()
-
-
-async def test_store_write_failure_does_not_stop_crawl(monkeypatch):
-    monkeypatch.setattr(CrawlManager, "_crawl", _fake_crawl)
-    store = MemoryJobStore()
-
-    async def failing_save(record):
-        raise ConnectionError("Redis went away")
-
-    store.save = failing_save
+async def test_cancel_before_crawl_starts_is_not_resumed(store_factory, web):
+    store = store_factory()
     manager = CrawlManager(store)
-    job = await manager.create_job(SEED, 1, 0)
+    job = await manager.create_job(SEED, 10, 2)
+    # The task has been created but has not run yet.
+    assert await manager.cancel(job.job_id)
+
+    state, _ = (await _stored(store))[job.job_id]
+    assert state["status"] == "cancelled"
+
+    restarted = CrawlManager(store_factory())
+    await restarted.restore()
+    assert restarted._tasks == {}
+    assert web.started == []
+
+
+async def test_completed_job_is_not_resumed(store_factory, web):
+    store = store_factory()
+    manager = CrawlManager(store)
+    job = await manager.create_job(SEED, 10, 2)
+    await _settle(manager, job.job_id)
+    started = list(web.started)
+
+    restarted = CrawlManager(store_factory())
+    await restarted.restore()
+    assert restarted._tasks == {}
+    assert restarted.get_job(job.job_id).status == "completed"
+    assert web.started == started
+
+
+async def test_queued_job_is_resumed_on_restart(store_factory, web):
+    store = store_factory()
+    queued = CrawlJobState(job_id="queued-1", seed=SEED, max_pages=10, max_depth=2)
+    await store.commit(queued.job_id, queued.to_state(), {})
+
+    manager = CrawlManager(store_factory())
+    await manager.restore()
+    await _settle(manager, "queued-1")
+    assert manager.get_job("queued-1").status == "completed"
+    assert web.completed == ALL_PAGES
+
+
+async def test_page_records_past_pages_crawled_are_ignored(web):
+    store = MemoryJobStore()
+    done = CrawlJobState(
+        job_id="orphans", seed=SEED, status="completed", pages=[PAGE], pages_crawled=1
+    )
+    orphan = {"url": A, "markdown": "written before the state commit failed"}
+    await store.commit(done.job_id, done.to_state(), {0: PAGE, 1: orphan})
+
+    manager = CrawlManager(store)
+    await manager.restore()
+    restored = manager.get_job("orphans")
+    assert restored.pages == [PAGE]
+    assert restored.pages_crawled == 1
+
+
+async def test_invalid_records_are_skipped_and_valid_jobs_still_load(monkeypatch):
+    logs = RecordingLogger()
+    monkeypatch.setattr(crawler, "logger", logs)
+    client = FakeRedis()
+    valid = CrawlJobState(
+        job_id="good", seed=SEED, status="completed", pages=[PAGE], pages_crawled=1, finished_at=2.0
+    ).to_state()
+    client.values["bc:crawl:job:good"] = json.dumps(valid)
+    client.hashes["bc:crawl:pages:good"] = {"0": json.dumps(PAGE)}
+
+    bad_states = {
+        "not-object": "[1, 2]",
+        "bad-json": "{",
+        "bad-status": json.dumps({**valid, "job_id": "bad-status", "status": "bogus"}),
+        "bad-type": json.dumps({**valid, "job_id": "bad-type", "max_pages": "10"}),
+        "bad-frontier": json.dumps(
+            {**valid, "job_id": "bad-frontier", "status": "running", "frontier": [["only-url"]]}
+        ),
+        "bad-visited": json.dumps({**valid, "job_id": "bad-visited", "visited": [1]}),
+        "negative-count": json.dumps({**valid, "job_id": "negative", "pages_crawled": -1}),
+        "missing-pages": json.dumps({**valid, "job_id": "missing", "pages_crawled": 1}),
+        "bad-page": json.dumps({**valid, "job_id": "bad-page", "pages_crawled": 1}),
+    }
+    for job_id, raw in bad_states.items():
+        client.values[f"bc:crawl:job:{job_id}"] = raw
+    client.hashes["bc:crawl:pages:bad-page"] = {"0": "[]"}
+
+    manager = CrawlManager(RedisJobStore(client))
+    await manager.restore()
+
+    assert list(manager._jobs) == ["good"]
+    assert manager._tasks == {}
+    assert logs.warnings.count("Skipping unreadable persisted crawl job") == 7
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("job_id", 1),
+        ("seed", None),
+        ("status", "nope"),
+        ("max_pages", "10"),
+        ("max_depth", True),
+        ("user_agent", 3),
+        ("pages_crawled", 1.5),
+        ("pages_failed", -1),
+        ("error", 4),
+        ("created_at", "now"),
+        ("finished_at", []),
+        ("frontier", "x"),
+        ("visited", "x"),
+        ("pages", ["not-object"]),
+    ],
+)
+def test_from_dict_rejects_invalid_field_types(field, value):
+    record = CrawlJobState(job_id="j", seed=SEED, status="completed").to_dict()
+    record[field] = value
+    with pytest.raises(ValueError):
+        CrawlJobState.from_dict(record)
+
+
+def test_from_dict_rejects_non_object_records():
+    with pytest.raises(ValueError):
+        CrawlJobState.from_dict([1, 2])
+
+
+async def test_failed_checkpoint_is_logged_and_pending_pages_are_saved_later(monkeypatch, web):
+    logs = RecordingLogger()
+    monkeypatch.setattr(crawler, "logger", logs)
+
+    class FlakyStore(MemoryJobStore):
+        failures_left = 1
+
+        async def commit(self, job_id, state, new_pages):
+            if self.failures_left:
+                self.failures_left -= 1
+                raise ConnectionError("Redis went away")
+            await super().commit(job_id, state, new_pages)
+
+    store = FlakyStore()
+    manager = CrawlManager(store)
+    job = await manager.create_job(SEED, 10, 2)
     await _settle(manager, job.job_id)
 
     assert job.status == "completed"
-    assert job.pages_crawled == 1
+    assert logs.warnings.count("Failed to checkpoint crawl job") == 1
+    state, pages = (await _stored(store))[job.job_id]
+    assert state["status"] == "completed"
+    assert len(pages) == len(ALL_PAGES)
 
 
-def test_startup_restores_persisted_jobs_for_polling(api_env, monkeypatch):
-    client_store = FakeRedis()
-    for job in (
-        CrawlJobState(job_id="job-done", seed=SEED, status="completed", pages=[PAGE]),
-        CrawlJobState(job_id="job-cut", seed=SEED, status="running"),
-    ):
-        client_store.values[f"bc:crawl:job:{job.job_id}"] = json.dumps(job.to_dict())
+@pytest.mark.parametrize("backend", ["redis", "disk"])
+def test_polling_resumes_after_restart(api_env, web, monkeypatch, tmp_path, backend):
+    if backend == "redis":
+        client = FakeRedis()
+        monkeypatch.setattr(main.settings, "REDIS_URL", "redis://cache:6379/0")
+        monkeypatch.setattr(job_store, "_open_redis_client", lambda url: client)
+    else:
+        monkeypatch.setattr(main.settings, "CRAWL_CHECKPOINTS_ENABLED", True)
+        monkeypatch.setenv("BLAZECRAWL_STATE_DIR", str(tmp_path))
+    web.blocked = {B}
+
+    with TestClient(main.app) as first:
+        created = first.post("/v1/crawl", json={"url": SEED, "max_pages": 10, "max_depth": 2})
+        assert created.status_code == 202
+        job_id = created.json()["job_id"]
+        _poll(first, job_id, lambda body: body["pages_crawled"] == 2)
+
+    web.blocked = set()
+    with TestClient(main.app) as second:
+        body = _poll(second, job_id, lambda body: body["status"] == "completed")
+
+    assert [page["url"] for page in body["pages"]] == ALL_PAGES
+    assert web.completed == ALL_PAGES
+
+
+def test_startup_serves_completed_job_from_redis(api_env, monkeypatch):
+    client = FakeRedis()
+    done = CrawlJobState(
+        job_id="job-done", seed=SEED, status="completed", pages=[PAGE], pages_crawled=1
+    )
+    client.values["bc:crawl:job:job-done"] = json.dumps(done.to_state())
+    client.hashes["bc:crawl:pages:job-done"] = {"0": json.dumps(PAGE)}
     monkeypatch.setattr(main.settings, "REDIS_URL", "redis://cache:6379/0")
-    monkeypatch.setattr(job_store, "_open_redis_client", lambda url: client_store)
+    monkeypatch.setattr(job_store, "_open_redis_client", lambda url: client)
 
-    with TestClient(main.app) as client:
-        done = client.get("/v1/crawl/job-done")
-        cut = client.get("/v1/crawl/job-cut")
+    with TestClient(main.app) as api:
+        response = api.get("/v1/crawl/job-done")
 
-    assert done.status_code == 200
-    assert done.json()["status"] == "completed"
-    assert done.json()["pages"] == [PAGE]
-    assert cut.status_code == 200
-    assert cut.json()["status"] == "failed"
-    assert cut.json()["error"] == "interrupted by restart"
-    assert json.loads(client_store.values["bc:crawl:job:job-cut"])["status"] == "failed"
-    assert client_store.closed
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["pages"] == [PAGE]
+    assert client.closed
 
 
-def test_api_falls_back_to_memory_when_redis_unreachable(api_env, monkeypatch):
+def test_api_falls_back_to_memory_when_redis_unreachable(api_env, web, monkeypatch):
     monkeypatch.setattr(main.settings, "REDIS_URL", "redis://cache:6379/0")
     monkeypatch.setattr(
         job_store,
         "_open_redis_client",
         lambda url: FakeRedis(fail_pings=job_store._CONNECT_ATTEMPTS),
     )
-    monkeypatch.setattr(CrawlManager, "_crawl", _fake_crawl)
-    monkeypatch.setattr(
-        "blazecrawl_core.network.ssrf.validate_and_pin", AsyncMock(return_value=None)
-    )
 
-    with TestClient(main.app) as client:
+    with TestClient(main.app) as api:
         assert isinstance(crawler._manager._store, MemoryJobStore)
-        created = client.post("/v1/crawl", json={"url": SEED, "max_pages": 1, "max_depth": 0})
+        created = api.post("/v1/crawl", json={"url": SEED, "max_pages": 10, "max_depth": 2})
         assert created.status_code == 202
-        job_id = created.json()["job_id"]
-        body = {}
-        for _ in range(100):
-            body = client.get(f"/v1/crawl/{job_id}").json()
-            if body["status"] == "completed":
-                break
-            time.sleep(0.02)
+        body = _poll(api, created.json()["job_id"], lambda body: body["status"] == "completed")
 
-    assert body["status"] == "completed"
-    assert body["pages_crawled"] == 1
+    assert body["pages_crawled"] == len(ALL_PAGES)

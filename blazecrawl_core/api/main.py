@@ -43,12 +43,13 @@ async def lifespan(app: FastAPI):
         logger.warning("Browser pool failed to start; static-only mode", error=str(e))
     if auth.auth_enforced():
         auth.effective_api_key()  # ensure a key exists + is logged
-    # Load persisted crawl jobs before serving; jobs interrupted by the last shutdown are marked failed.
+    # Reload persisted crawl jobs and resume the unfinished ones before serving.
     await get_crawl_manager()
     yield
+    # Suspend crawls before the browser pool they fetch through shuts down.
+    await close_crawl_manager()
     with suppress(Exception):
         await get_browser_pool().shutdown()
-    await close_crawl_manager()
 
 
 app = FastAPI(

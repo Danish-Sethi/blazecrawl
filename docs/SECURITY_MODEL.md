@@ -101,8 +101,10 @@ guarantee unprivileged user namespaces; BlazeCrawl itself is **not** a
 security sandbox — isolate untrusted crawling workloads with containers/VMs
 as appropriate for your threat model.
 
-When `REDIS_URL` is set, crawl job state (including fetched page Markdown) is written to Redis. Keep Redis on
-the internal network only, as the reference compose file does.
+When `REDIS_URL` is set, crawl checkpoints (page URLs, titles, and Markdown) are written to Redis. When
+`CRAWL_CHECKPOINTS_ENABLED=true`, they are written to `<state dir>/crawl-checkpoints`, with directories at
+mode 0700 and files at mode 0600 on POSIX. Keep Redis on the internal network only, as the reference compose
+file does, and protect the checkpoint directory like the API-key state directory.
 
 ## Reporting
 

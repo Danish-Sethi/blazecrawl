@@ -108,6 +108,7 @@ Difficulty legend: 🟢 good-first-issue · 🟡 intermediate · 🔴 advanced.
 
 ### INT-8 🟡 Crawl checkpoint/resume
 - **Files:** `engine/crawler.py`
+- **Status:** implemented in #9/#31 (per-page checkpoints; Redis and opt-in disk stores; resume after restart)
 - **Acceptance:** interrupted crawl can resume from persisted frontier (memory→disk snapshot); test.
 
 ### INT-9 🟡 Per-host crawl-delay + concurrency limiting

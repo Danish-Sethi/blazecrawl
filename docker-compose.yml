@@ -17,9 +17,10 @@ services:
       BLAZECRAWL_PORT: "8000"
       BLAZECRAWL_API_KEY: ${BLAZECRAWL_API_KEY:-}
       BLAZECRAWL_STATE_DIR: /data/blazecrawl
-      # Optional Redis for caching and crawl job persistence. Leave empty to use in-process
-      # storage (crawl jobs then do not survive restarts).
+      # Optional Redis for caching and crawl job checkpoints. Leave empty to keep checkpoints in memory,
+      # which are lost on restart unless CRAWL_CHECKPOINTS_ENABLED=true writes them to the state volume.
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CRAWL_CHECKPOINTS_ENABLED: ${CRAWL_CHECKPOINTS_ENABLED:-false}
       CRAWL_QUEUE_BACKEND: ${CRAWL_QUEUE_BACKEND:-memory}
       BROWSER_POOL_SIZE: ${BROWSER_POOL_SIZE:-2}
     volumes:
@@ -39,7 +40,7 @@ services:
         required: false
     restart: unless-stopped
 
-  # Redis is optional (caching and crawl job persistence). The API runs fine without it using
+  # Redis is optional (caching and crawl job checkpoints). The API runs fine without it using
   # in-process storage; it's included so a shared cache and durable crawl jobs are one flag away.
   # Internal compose network only: no host-published port.
   redis:

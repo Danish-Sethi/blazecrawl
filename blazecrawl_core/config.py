@@ -64,7 +64,7 @@ class Settings:
         self.BROWSER_HEADLESS: bool = _env_bool("BROWSER_HEADLESS", True)
         self.DEFAULT_TIMEOUT_MS: int = _env_int("DEFAULT_TIMEOUT_MS", 30000)
 
-        # Optional Redis: caching, and crawl job persistence (falls back to in-process if unreachable).
+        # Optional Redis: caching, and crawl job checkpoints (falls back to in-process if unreachable).
         self.REDIS_URL: str | None = os.environ.get("REDIS_URL") or None
         self.CACHE_DEFAULT_TTL_SECONDS: int = _env_int("CACHE_DEFAULT_TTL_SECONDS", 3600)
 
@@ -72,6 +72,10 @@ class Settings:
         self.CRAWL_QUEUE_BACKEND: str = (
             os.environ.get("CRAWL_QUEUE_BACKEND", "memory").strip().lower()
         )
+
+        # Crawl checkpoints on local disk (opt-in). Used when Redis is not configured or
+        # unreachable. Files are written under <state dir>/crawl-checkpoints.
+        self.CRAWL_CHECKPOINTS_ENABLED: bool = _env_bool("CRAWL_CHECKPOINTS_ENABLED", False)
 
         # Crawl limits.
         self.CRAWL_MAX_PAGES_DEFAULT: int = _env_int("CRAWL_MAX_PAGES_DEFAULT", 50)

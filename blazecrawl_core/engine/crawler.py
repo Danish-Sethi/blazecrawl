@@ -1,9 +1,12 @@
 """Crawler for BlazeCrawl Core (BFS, same-origin, robots-respecting).
 
-Live jobs run as in-process asyncio tasks. Every lifecycle transition is also
-snapshotted to a job store (``engine/job_store.py``): Redis when ``REDIS_URL``
-is reachable, otherwise memory. Persisted jobs stay readable after a restart,
-but crawl tasks cannot survive one, so interrupted jobs are marked ``failed``.
+Each job runs as an in-process asyncio task. After every fetched page, the
+job's frontier, visited URLs, results and counters are checkpointed to a job
+store (``engine/job_store.py``). On startup, queued and running jobs are
+reloaded and resumed from their last checkpoint: pages fetched before that
+checkpoint are not fetched again, and pages fetched after it are. A normal
+shutdown suspends running jobs without marking them cancelled. Only an explicit
+cancel makes a job terminal.
 
 Security invariants preserved on every page fetch:
 * every URL is SSRF-validated and pinned before fetching
@@ -16,8 +19,8 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urldefrag, urlsplit
 
 from blazecrawl_core.config import settings
@@ -29,7 +32,50 @@ from blazecrawl_core.network.ssrf import SSRFValidationError, validate_and_pin
 
 logger = get_logger(__name__)
 
+_STATUSES = frozenset({"queued", "running", "completed", "failed", "cancelled"})
 _ACTIVE_STATUSES = frozenset({"queued", "running"})
+
+
+def _field(
+    data: dict[str, Any], key: str, kind: type | tuple[type, ...], *, nullable: bool = False
+) -> Any:
+    value = data.get(key)
+    if value is None and nullable:
+        return None
+    if isinstance(value, bool) or not isinstance(value, kind):
+        raise ValueError(f"crawl job field {key!r} has an invalid type")
+    return value
+
+
+def _count(data: dict[str, Any], key: str) -> int:
+    value = _field(data, key, int)
+    if value < 0:
+        raise ValueError(f"crawl job field {key!r} must not be negative")
+    return value
+
+
+def _frontier_from(raw: Any) -> list[tuple[str, int]] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("crawl job field 'frontier' must be a list")
+    frontier: list[tuple[str, int]] = []
+    for entry in raw:
+        if not (isinstance(entry, list) and len(entry) == 2):
+            raise ValueError("frontier entries must be [url, depth] pairs")
+        url, depth = entry
+        if not isinstance(url, str) or isinstance(depth, bool) or not isinstance(depth, int):
+            raise ValueError("frontier entries must be [url, depth] pairs")
+        frontier.append((url, depth))
+    return frontier
+
+
+def _visited_from(raw: Any) -> set[str]:
+    if raw is None:
+        return set()
+    if not isinstance(raw, list) or not all(isinstance(url, str) for url in raw):
+        raise ValueError("crawl job field 'visited' must be a list of URLs")
+    return set(raw)
 
 
 @dataclass
@@ -46,22 +92,42 @@ class CrawlJobState:
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
+    # Next URLs to fetch as (url, depth); None until the crawl first runs. While a page
+    # is in flight its URL is still in the last checkpoint, so a restart fetches it again.
+    frontier: list[tuple[str, int]] | None = None
+    visited: set[str] = field(default_factory=set)
+    # Entries of ``pages`` already written to the store.
+    persisted_pages: int = field(default=0, compare=False, repr=False)
 
     @classmethod
-    def from_dict(cls, data: dict) -> CrawlJobState:
+    def from_dict(cls, data: Any) -> CrawlJobState:
+        """Build a job from ``to_dict()`` or ``to_state()`` output (with ``pages`` attached)."""
+        if not isinstance(data, dict):
+            raise ValueError("crawl job record must be a JSON object")
+        status = _field(data, "status", str)
+        if status not in _STATUSES:
+            raise ValueError(f"unknown crawl status {status!r}")
+        pages = _field(data, "pages", list)
+        if any(not isinstance(page, dict) for page in pages):
+            raise ValueError("crawl job pages must be objects")
+        pages_crawled = _count(data, "pages_crawled")
+        if len(pages) < pages_crawled:
+            raise ValueError("crawl job has fewer page records than pages_crawled")
         return cls(
-            job_id=data["job_id"],
-            seed=data["seed"],
-            status=data["status"],
-            max_pages=data["max_pages"],
-            max_depth=data["max_depth"],
-            user_agent=data["user_agent"],
-            pages=list(data["pages"]),
-            pages_crawled=data["pages_crawled"],
-            pages_failed=data["pages_failed"],
-            error=data["error"],
-            created_at=data["created_at"],
-            finished_at=data["finished_at"],
+            job_id=_field(data, "job_id", str),
+            seed=_field(data, "seed", str),
+            status=status,
+            max_pages=_count(data, "max_pages"),
+            max_depth=_count(data, "max_depth"),
+            user_agent=_field(data, "user_agent", str),
+            pages=pages[:pages_crawled],
+            pages_crawled=pages_crawled,
+            pages_failed=_count(data, "pages_failed"),
+            error=_field(data, "error", str, nullable=True),
+            created_at=_field(data, "created_at", (int, float)),
+            finished_at=_field(data, "finished_at", (int, float), nullable=True),
+            frontier=_frontier_from(data.get("frontier")),
+            visited=_visited_from(data.get("visited")),
         )
 
     def to_dict(self) -> dict:
@@ -80,9 +146,32 @@ class CrawlJobState:
             "pages": self.pages,
         }
 
+    def to_state(self) -> dict:
+        """Everything needed to resume the job, without page records (stored separately)."""
+        state = self.to_dict()
+        del state["pages"]
+        state["frontier"] = (
+            None if self.frontier is None else [[url, depth] for url, depth in self.frontier]
+        )
+        state["visited"] = list(self.visited)
+        return state
+
+
+def _job_from_record(state: Any, page_records: dict[int, dict]) -> CrawlJobState:
+    """Combine a stored state with its page records. Pages past pages_crawled are ignored."""
+    if not isinstance(state, dict):
+        raise TypeError("crawl job state must be a JSON object")
+    count = state.get("pages_crawled")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("crawl job field 'pages_crawled' must be a non-negative integer")
+    missing = [index for index in range(count) if index not in page_records]
+    if missing:
+        raise ValueError(f"crawl job is missing {len(missing)} page record(s)")
+    return CrawlJobState.from_dict({**state, "pages": [page_records[i] for i in range(count)]})
+
 
 class CrawlManager:
-    """Crawl job manager + executor (single-node), with snapshots in a ``JobStore``."""
+    """Crawl job manager and executor (single-node), checkpointed to a ``JobStore``."""
 
     def __init__(self, store: JobStore | None = None) -> None:
         self._store: JobStore = store or MemoryJobStore()
@@ -91,29 +180,26 @@ class CrawlManager:
         self._sem = asyncio.Semaphore(settings.CRAWL_MAX_CONCURRENCY)
 
     async def restore(self) -> None:
-        """Load persisted jobs. Jobs cut off by a restart are marked ``failed`` (no resume)."""
+        """Load persisted jobs and resume the ones that were queued or running."""
         try:
-            records = await self._store.load_all()
+            records = await self._store.load_jobs()
         except Exception as e:
-            logger.warning("Could not load persisted crawl jobs", error=str(e))
+            logger.warning("Could not load persisted crawl jobs", error=str(e) or type(e).__name__)
             return
-        restored = 0
-        interrupted = 0
-        for record in records:
+        restored = resumed = 0
+        for state, page_records in records:
             try:
-                job = CrawlJobState.from_dict(record)
-            except (KeyError, TypeError, ValueError) as e:
-                logger.warning("Skipping malformed persisted crawl job", error=str(e))
+                job = _job_from_record(state, page_records)
+            except (TypeError, ValueError) as e:
+                logger.warning("Skipping unreadable persisted crawl job", error=str(e))
                 continue
-            if job.status in _ACTIVE_STATUSES:
-                job.status = "failed"
-                job.error = "interrupted by restart"
-                job.finished_at = time.time()
-                await self._persist(job)
-                interrupted += 1
+            job.persisted_pages = len(job.pages)
             self._jobs[job.job_id] = job
             restored += 1
-        logger.info("Restored crawl jobs", restored=restored, interrupted=interrupted)
+            if job.status in _ACTIVE_STATUSES:
+                self._start(job)
+                resumed += 1
+        logger.info("Restored crawl jobs", restored=restored, resumed=resumed)
 
     async def create_job(
         self,
@@ -129,10 +215,10 @@ class CrawlManager:
             max_depth=max_depth or settings.CRAWL_MAX_DEPTH_DEFAULT,
             user_agent=user_agent,
         )
-        # Persist before the task exists so snapshots are written in order: queued → running → final.
-        await self._persist(job)
+        # Checkpoint before the task starts, so a job accepted with 202 survives a crash.
+        await self._checkpoint(job)
         self._jobs[job.job_id] = job
-        self._tasks[job.job_id] = asyncio.create_task(self._run(job))
+        self._start(job)
         return job
 
     def get_job(self, job_id: str) -> CrawlJobState | None:
@@ -143,42 +229,69 @@ class CrawlManager:
         task = self._tasks.get(job_id)
         if not job or not task:
             return False
-        task.cancel()
         job.status = "cancelled"
         job.finished_at = time.time()
-        await self._persist(job)
+        if not task.done():
+            task.cancel()
+            # Wait for the crawl to unwind, so this write is the only writer left. This also
+            # covers a task cancelled before its body ran, which would otherwise persist nothing.
+            await asyncio.gather(task, return_exceptions=True)
+        await self._checkpoint(job)
         return True
 
-    async def close(self) -> None:
+    async def shutdown(self) -> None:
+        """Stop running jobs without cancelling them, then close the store.
+
+        Suspended jobs keep their last checkpoint and resume on the next startup.
+        """
+        running = [task for task in self._tasks.values() if not task.done()]
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
         await self._store.close()
 
-    async def _persist(self, job: CrawlJobState) -> None:
+    def _start(self, job: CrawlJobState) -> None:
+        self._tasks[job.job_id] = asyncio.create_task(self._run(job))
+
+    async def _checkpoint(self, job: CrawlJobState) -> None:
+        """Write unsaved pages, then the state. Failures are logged and the crawl continues."""
+        new_pages = {
+            index: job.pages[index] for index in range(job.persisted_pages, len(job.pages))
+        }
         try:
-            await self._store.save(job.to_dict())
+            await self._store.commit(job.job_id, job.to_state(), new_pages)
         except Exception as e:
-            logger.warning("Failed to persist crawl job", job_id=job.job_id, error=str(e))
+            logger.warning(
+                "Failed to checkpoint crawl job",
+                job_id=job.job_id,
+                error=str(e) or type(e).__name__,
+            )
+            return
+        job.persisted_pages = len(job.pages)
 
     async def _run(self, job: CrawlJobState) -> None:
-        job.status = "running"
-        await self._persist(job)
         try:
+            job.status = "running"
+            await self._checkpoint(job)
             await self._crawl(job)
             job.status = "completed"
         except asyncio.CancelledError:
-            job.status = "cancelled"
+            # cancel() checkpoints the cancelled state after this task unwinds. On shutdown the
+            # last checkpoint stays the resume point.
             raise
         except Exception as e:
             job.status = "failed"
             job.error = str(e)
             logger.error("Crawl failed", job_id=job.job_id, error=str(e))
-        finally:
-            job.finished_at = time.time()
-            await self._persist(job)
+        job.finished_at = time.time()
+        await self._checkpoint(job)
 
     async def _crawl(self, job: CrawlJobState) -> None:
         seed_host = urlsplit(job.seed).netloc
-        visited: set[str] = set()
-        frontier: list[tuple[str, int]] = [(job.seed, 0)]
+        if job.frontier is None:
+            job.frontier = [(job.seed, 0)]
+        frontier = job.frontier
+        visited = job.visited
 
         while frontier and job.pages_crawled < job.max_pages:
             url, depth = frontier.pop(0)
@@ -236,6 +349,7 @@ class CrawlManager:
                 except Exception as e:
                     job.pages_failed += 1
                     logger.warning("Crawl page failed", url=url, error=str(e))
+                await self._checkpoint(job)
 
 
 _manager: CrawlManager | None = None
@@ -256,5 +370,7 @@ async def close_crawl_manager() -> None:
     global _manager
     manager, _manager = _manager, None
     if manager is not None:
-        with suppress(Exception):
-            await manager.close()
+        try:
+            await manager.shutdown()
+        except Exception as e:
+            logger.warning("Crawl manager shutdown failed", error=str(e) or type(e).__name__)

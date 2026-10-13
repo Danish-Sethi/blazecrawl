@@ -55,15 +55,25 @@ with the headless-browser path, which is also egress-guarded per request.
 
 ## Crawl queue and job persistence
 
-Crawls run as in-process tasks on a single node. Job state is snapshotted to a job store at each
-lifecycle transition (queued, running, finished, cancelled):
+Crawls run as in-process tasks on a single node. After every fetched page, a job checkpoints its state
+(status, counters, settings, frontier, visited URLs) and the new page records to a job store. The state
+write is the commit point.
 
-- `memory` (default): process-local. Jobs are lost on restart.
+- `memory` (default): process-local. Nothing survives a process exit.
 - `redis`: used when `REDIS_URL` is set and reachable at startup (requires the `redis` extra,
-  `pip install blazecrawl-core[redis]`). Jobs are stored under `bc:crawl:job:<job_id>` with no expiry;
-  delete those keys to purge them. If Redis is unreachable at startup, the API logs a warning and uses the
-  memory store.
+  `pip install blazecrawl-core[redis]`). Each checkpoint is one Redis transaction. Keys are
+  `bc:crawl:job:<job_id>` (state) and `bc:crawl:pages:<job_id>` (page records), with no expiry; delete them
+  to purge.
+- `disk`: opt-in with `CRAWL_CHECKPOINTS_ENABLED=true`, stored under `<state dir>/crawl-checkpoints/<job_id>/`.
+  Files are written atomically (temp file, fsync, rename). On POSIX, directories are created with mode 0700
+  and files with mode 0600.
 
-On startup, persisted jobs are loaded so `GET /v1/crawl/{id}` keeps working after a restart. Any job still
-`queued` or `running` is marked `failed` with `interrupted by restart`. Crawls are not resumed, and
-multi-process workers sharing one queue are not implemented.
+If Redis is unreachable at startup (three attempts, 2 s timeout each), the API logs a warning and uses the disk
+store when enabled, otherwise the memory store. A failed checkpoint is logged and the crawl continues; the
+pages it could not write are retried at the next checkpoint.
+
+On startup, queued and running jobs are reloaded and resumed from their last checkpoint. Pages fetched after
+that checkpoint are fetched again; completed pages are not. A normal shutdown stops running jobs without marking
+them cancelled, so they resume on the next startup. Only an explicit `DELETE /v1/crawl/{job_id}` makes a job
+`cancelled`. Cancelled, completed, and failed jobs are not resumed. Records that fail validation are logged and
+skipped. Multi-process workers sharing one queue are not implemented.
