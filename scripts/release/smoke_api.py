@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import re
@@ -27,7 +28,7 @@ def run(command: list[str], **kwargs) -> str:
     return subprocess.check_output(command, text=True, timeout=180, **kwargs).strip()
 
 
-def request(base: str, key: str | None, path: str, body=None, *, status=200):
+def request(base: str, key: str | None, path: str, body=None, *, status=200, timeout=60):
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -37,7 +38,7 @@ def request(base: str, key: str | None, path: str, body=None, *, status=200):
         headers=headers,
     )
     try:
-        response = urllib.request.urlopen(req, timeout=60)
+        response = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as error:
         response = error
     with response:
@@ -48,17 +49,25 @@ def request(base: str, key: str | None, path: str, body=None, *, status=200):
 
 def wait_ready(base: str, version: str) -> None:
     deadline = time.monotonic() + 90
+    last_error = None
     while time.monotonic() < deadline:
         try:
-            health = request(base, None, "/health")
-        except urllib.error.URLError:
+            health = request(base, None, "/health", timeout=5)
+        except (
+            urllib.error.URLError,
+            ConnectionError,
+            http.client.RemoteDisconnected,
+            TimeoutError,
+        ) as error:
+            # Docker can accept/reset a connection before Uvicorn starts serving.
+            last_error = error
             time.sleep(1)
             continue
         assert health["version"] == version, health
         ready = request(base, None, "/ready")
         assert ready["ready"] and ready["browser"]["is_healthy"], ready
         return
-    raise TimeoutError("API failed to start within 90s; see service log")
+    raise TimeoutError("API failed to start within 90s; see service log") from last_error
 
 
 def poll(base: str, key: str, path: str, predicate) -> dict:

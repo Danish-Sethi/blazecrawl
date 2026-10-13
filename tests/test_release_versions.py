@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.release import smoke_api
 from scripts.release.versions import check
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,3 +54,41 @@ def test_rejects_independent_npm_lock_drift(tmp_path, field):
 def test_rejects_invalid_release_version(version):
     with pytest.raises(ValueError, match="X.Y.Z"):
         check(ROOT, version)
+
+
+def test_readiness_retries_startup_reset(monkeypatch):
+    replies = iter(
+        [
+            ConnectionResetError("container listener is starting"),
+            {"version": "0.2.0"},
+            {"ready": True, "browser": {"is_healthy": True}},
+        ]
+    )
+
+    def request(*args, **kwargs):
+        result = next(replies)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(smoke_api, "request", request)
+    monkeypatch.setattr(smoke_api.time, "sleep", lambda _: None)
+    smoke_api.wait_ready("http://127.0.0.1:8000", "0.2.0")
+
+
+def test_readiness_does_not_hide_version_mismatch(monkeypatch):
+    monkeypatch.setattr(smoke_api, "request", lambda *args, **kwargs: {"version": "0.1.2"})
+    with pytest.raises(AssertionError):
+        smoke_api.wait_ready("http://127.0.0.1:8000", "0.2.0")
+
+
+def test_readiness_does_not_accept_degraded_browser(monkeypatch):
+    replies = iter(
+        [
+            {"version": "0.2.0"},
+            {"ready": True, "browser": {"is_healthy": False}},
+        ]
+    )
+    monkeypatch.setattr(smoke_api, "request", lambda *args, **kwargs: next(replies))
+    with pytest.raises(AssertionError):
+        smoke_api.wait_ready("http://127.0.0.1:8000", "0.2.0")
