@@ -112,7 +112,8 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
                 payload.only_main_content,
                 payload.render,
                 payload.user_agent,
-                payload.full_page,
+                full_page=payload.full_page,
+                headers=payload.headers,
             )
             if hit is not None:
                 if hit.get("screenshot"):
@@ -130,6 +131,7 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
             render=payload.render,
             user_agent=payload.user_agent,
             full_page=payload.full_page,
+            headers=payload.headers,
         )
         data = result.to_dict()
         if payload.use_cache:
@@ -141,6 +143,7 @@ async def scrape_endpoint(payload: ScrapeRequest) -> ScrapeResponse:
                 render=payload.render,
                 user_agent=payload.user_agent,
                 full_page=payload.full_page,
+                headers=payload.headers,
             )
         return ScrapeResponse(success=True, data=data)
     except SSRFValidationError as e:

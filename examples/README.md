@@ -18,6 +18,7 @@ export BLAZECRAWL_API_KEY=blz_local_...           # from the server logs
 | [quickstart.py](quickstart.py) | Minimal scrape → Markdown, then a bounded crawl. |
 | [scrape_browser_rendered.py](scrape_browser_rendered.py) | Force the Playwright browser path (`render="browser"`) for a JS-injected page. |
 | [map_then_crawl.py](map_then_crawl.py) | `map` a site's URLs, then `crawl` a bounded subset. |
+| [custom_headers.py](custom_headers.py) | Pass custom HTTP headers (User-Agent, Accept-Language, auth) with a scrape request. |
 
 Run with the Python SDK installed (`pip install blazecrawl`):
 
@@ -30,6 +31,7 @@ python examples/quickstart.py
 | Example | What it shows |
 |---|---|
 | [node_sdk.mjs](node_sdk.mjs) | Scrape, map, and crawl with `@blazecrawl/sdk`. |
+| [custom_headers.mjs](custom_headers.mjs) | Pass custom HTTP headers (User-Agent, Accept-Language, auth) with a scrape request. |
 
 Run with the Node SDK installed (`npm install @blazecrawl/sdk`):
 
@@ -45,6 +47,21 @@ client while the crawler stays self-hosted. See
 [mcp/python](../mcp/python/README.md) and [mcp/node](../mcp/node/README.md) for
 the two server implementations and client-specific setup.
 
-> Note: the v0.1 scrape API does not accept arbitrary outbound request headers.
-> If you need custom headers for a target site, follow
-> [issue #7](https://github.com/danishxsethi/blazecrawl/issues/7).
+> **Custom headers:** The current source checkout supports a `headers` field on
+> `POST /v1/scrape` for passing custom outbound HTTP headers (User-Agent,
+> Accept-Language, Authorization, etc.). See [custom_headers.py](custom_headers.py)
+> and [custom_headers.mjs](custom_headers.mjs) for runnable examples.
+> That field is **not in the published `v0.1.2` schema**.
+
+The custom-header examples use the external `https://httpbin.org/headers` echo
+service and **fake** website credentials only. Your `BLAZECRAWL_API_KEY` stays
+on the SDK-to-BlazeCrawl request; it is not an outbound website header.
+Set `BLAZECRAWL_HEADER_DEMO_URL` to an echo endpoint you control to change the
+target. Local/private scrape targets remain blocked by SSRF policy.
+Run `python examples/custom_headers.py` (Python SDK installed) or
+`node examples/custom_headers.mjs` (uses this checkout's Node SDK).
+Both request `formats: ["text"]` and print the unwrapped `plaintext` response,
+so the returned User-Agent and language/auth headers can be compared directly.
+Header names ignore case; a custom User-Agent wins over `user_agent` on the
+initial origin only. Custom headers are bounded and origin-scoped on both
+static and browser fetches; see [API details](../README.md#api).

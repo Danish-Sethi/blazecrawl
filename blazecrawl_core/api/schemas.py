@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from blazecrawl_core.engine.robots import DEFAULT_USER_AGENT
+from blazecrawl_core.network.headers import validate_headers, validate_user_agent
 
 
 class ScrapeRequest(BaseModel):
@@ -29,6 +30,21 @@ class ScrapeRequest(BaseModel):
     render: Literal["auto", "static", "browser"] = "auto"
     use_cache: bool = True
     user_agent: str = Field(default=DEFAULT_USER_AGENT, min_length=1, max_length=200)
+    headers: dict[str, str] | None = Field(
+        default=None,
+        description="Initial-origin HTTP headers; at most 32 headers / 8192 bytes. "
+        "A case-insensitive User-Agent header overrides user_agent on that origin.",
+    )
+
+    @field_validator("headers")
+    @classmethod
+    def _headers(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return validate_headers(value) if value is not None else None
+
+    @field_validator("user_agent")
+    @classmethod
+    def _user_agent(cls, value: str) -> str:
+        return validate_user_agent(value)
 
     @field_validator("url")
     @classmethod

@@ -100,14 +100,19 @@ async def test_scrape_screenshot_goes_to_browser_and_forwards_full_page(monkeypa
     async def fake_fetch_static(*args, **kwargs):
         raise AssertionError("screenshot must not take the static path")
 
-    async def fake_fetch_browser(url, timeout_ms, user_agent, *, screenshot=False, full_page=False):
-        calls.append((screenshot, full_page))
+    async def fake_fetch_browser(
+        url, timeout_ms, user_agent, headers=None, *, screenshot=False, full_page=False
+    ):
+        calls.append((screenshot, full_page, headers))
         return 200, "<html><body><p>hi</p></body></html>", url, PNG_SIGNATURE + b"fake"
 
     monkeypatch.setattr(scraper, "_fetch_static", fake_fetch_static)
     monkeypatch.setattr(scraper, "_fetch_browser", fake_fetch_browser)
-    result = await scraper.scrape("https://example.com", formats=["screenshot"], full_page=True)
-    assert calls == [(True, True)]
+    headers = {"X-Custom-Token": "fake-screenshot-token"}
+    result = await scraper.scrape(
+        "https://example.com", formats=["screenshot"], full_page=True, headers=headers
+    )
+    assert calls == [(True, True, {"x-custom-token": "fake-screenshot-token"})]
     assert result.render == "browser"
     assert base64.b64decode(result.screenshot).startswith(PNG_SIGNATURE)
 
