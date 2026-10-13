@@ -2,7 +2,10 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -404,3 +407,30 @@ def test_api_falls_back_to_memory_when_redis_unreachable(api_env, web, monkeypat
         body = _poll(api, created.json()["job_id"], lambda body: body["status"] == "completed")
 
     assert body["pages_crawled"] == len(ALL_PAGES)
+
+
+def test_hard_crash_mid_page_resumes_in_a_new_process(tmp_path):
+    root = tmp_path / "checkpoints"
+    fetch_log = tmp_path / "fetches.log"
+    repo_root = Path(__file__).resolve().parents[1]
+
+    def run_worker(mode: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "tests.crash_worker", mode, str(root), str(fetch_log)],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    crashed = run_worker("crash")
+    assert crashed.returncode == 1, crashed.stderr
+    assert fetch_log.read_text(encoding="utf-8").splitlines() == [SEED, A, B]
+
+    resumed = run_worker("resume")
+    assert resumed.returncode == 0, resumed.stderr
+    ((state, pages),) = asyncio.run(DiskJobStore(root).load_jobs())
+    assert state["status"] == "completed"
+    assert [pages[index]["url"] for index in sorted(pages)] == ALL_PAGES
+    # Seed and A were checkpointed before the crash and are not fetched again.
+    assert fetch_log.read_text(encoding="utf-8").splitlines() == [SEED, A, B, B, C, D]
