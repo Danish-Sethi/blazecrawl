@@ -1,2 +1,2 @@
 # Media generation only; not a BlazeCrawl runtime dependency.
-Pillow==12.3.0
+Pillow==13.0.0
