@@ -77,7 +77,7 @@ jobs:
           VERSION: ${{ needs.verify-release.outputs.version }}
         run: bash scripts/release/artifacts.sh built "$VERSION"
       - name: Inventory the tested image
-        uses: anchore/sbom-action@3f46e6c23709f2b35c9c5182affe8ef3d6e32b71
+        uses: anchore/sbom-action@a61e3c81cfa072d15e731a6c98ab810e75f2e1a6
         with:
           image: blazecrawl-candidate:${{ needs.verify-release.outputs.version }}
           format: spdx-json
